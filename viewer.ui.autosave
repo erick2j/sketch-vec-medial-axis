@@ -463,7 +463,7 @@
              <enum>QTabWidget::TabShape::Rounded</enum>
             </property>
             <property name="currentIndex">
-             <number>0</number>
+             <number>1</number>
             </property>
             <property name="elideMode">
              <enum>Qt::TextElideMode::ElideNone</enum>
@@ -587,6 +587,9 @@
                <widget class="QComboBox" name="upsampling_combobox">
                 <property name="cursor">
                  <cursorShape>PointingHandCursor</cursorShape>
+                </property>
+                <property name="editable">
+                 <bool>false</bool>
                 </property>
                 <property name="placeholderText">
                  <string>Upsampling Technique</string>

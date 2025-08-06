@@ -1,4 +1,5 @@
 pip==25.2
+numba
 setuptools
 triangle
 opencv-python

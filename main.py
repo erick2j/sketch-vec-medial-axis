@@ -8,7 +8,7 @@ from distance_to_measure import *
 from curve_extraction import *
 
 logging.basicConfig(
-        level=logging.DEBUG,
+        level=logging.INFO,
         format='[%(asctime)s] %(levelname)s: %(message)s',
         datefmt='%H:%M:%S'
         )
@@ -32,9 +32,11 @@ class MainWindow(QMainWindow):
         self.connect()
         
         self.base_image = None
+        self.image_measure = None
         self.distance_function = None
         self.isovalue = 0.0
         self.stroke_width = 1 
+        self.boundary_contours = None
 
         
 
@@ -90,6 +92,7 @@ class MainWindow(QMainWindow):
             return
         # read image and display it
         self.base_image = 255 - process_image(file_path, padding=0)
+        self.base_image = cv2.resize(self.base_image, None, fx=2, fy=2, interpolation=cv2.INTER_LINEAR)
         self.image_measure = normalize_to_measure(self.base_image)
         #self.boundary_measure  = normalize_to_measure(compute_sobel_boundary(self.base_image))
 
@@ -136,7 +139,7 @@ class MainWindow(QMainWindow):
         global MIN_ISO_VALUE, MAX_ISO_VALUE
         self.stroke_width = self.get_stroke_width()
         self.ui.stroke_width_display.display(self.stroke_width)
-        self.distance_function, _ = distance_to_measure_gpu(self.image_measure, 0.5*self.stroke_width, dr=0.1)
+        self.distance_function, _ = distance_to_measure_roi_sparse_cpu_numba(self.image_measure, 0.5*self.stroke_width)
         MAX_ISO_VALUE = np.max(self.distance_function)
         MIN_ISO_VALUE = np.min(self.distance_function)
         self.toggle_distance_function()
@@ -177,7 +180,7 @@ class MainWindow(QMainWindow):
         pass
 
     def toggle_boundary(self):
-        if self.ui.level_set_contour_checkbox.isChecked():
+        if self.ui.level_set_contour_checkbox.isChecked() and self.boundary_contours is not None:
             self.ui.mpl_widget.plot_contours(self.boundary_contours)
         else:
             self.ui.mpl_widget.hide_levelset_contours()

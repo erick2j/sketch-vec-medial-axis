@@ -7,6 +7,7 @@ if platform.system() != 'Darwin':
     import cupy as cp
     import cupyx.scipy.ndimage as cps
 import cv2
+from numba import njit, prange
 
 
 logger = logging.getLogger(__name__)
@@ -78,51 +79,62 @@ def disk_kernel(r):
     return kernel 
 
 
-def distance_to_measure_cpu(measure, m0, dr, rmax=None):
+def distance_to_measure_cpu(measure, stroke_radius=1, dr=0.05):
     '''
     Compute the distance to a measure defined on a pixel grid.
     '''
+    start = time.time() 
+    rmax = 5*stroke_radius 
+    # compute the mass of the heaviest ball and set the mass threshold to that
+    last_mass = cv2.filter2D(src=measure, ddepth=-1, kernel=disk_kernel(stroke_radius))
+    #m0 = np.min(last_mass[last_mass > np.max(measure)])
+    m0 = np.max(last_mass)
+
     # compute the smallest possible radius that could contain mass m0
     rmin = np.minimum(np.sqrt(m0 / (np.pi * np.max(measure))), 0.5)
 
+    # linearly sample radii
+    #radii = np.linspace(rmin, rmax, int((rmax-rmin) / dr) )
+    radii = np.geomspace(rmin, rmax, int((rmax-rmin) / dr) )
+
+
+    # compute all convolution kernels 
+    kernels = [disk_kernel(r) for r in radii]
+
     # wasserstein distance contribution of inner-most disk
-    mass = cv2.filter2D(src=measure, ddepth=-1, kernel=disk_kernel(rmin))
+    mass = cv2.filter2D(src=measure, ddepth=-1, kernel=kernels[0])
     D = np.zeros_like(measure)
-    D = 0.5 * rmin**2 * mass
+    D = 0.5 * radii[0]**2 * mass
 
     # find all satisfied pixels
     satisfied = (mass >= m0)
     mass_prev = mass
 
     # add contribution from subsequent shells until reach mass m0
-    radius = rmin + dr
-    while not np.all(satisfied):
-        # stop if we hit the radius limit
-        if rmax is not None and radius > rmax:
-            logger.warning(f"Reached max radius ({rmax}). Exiting early.")
-            break
-
-        kernel = disk_kernel(radius)
+    for i, kernel in enumerate(kernels[1:], start=1):
         # compute the amount of mass contained in radius 'r' for all pixels
         mass = cv2.filter2D(src=measure, ddepth=-1, kernel=kernel)
         mass_diff = mass - mass_prev
         # set up a mask to only update pixels that haven't met the mass threshold
         update = (mass < m0) & ~satisfied 
         # add wasserstein distance contribution
-        D[update] += 0.5 * (radius**2 + (radius-dr)**2) * mass_diff[update]
+        D[update] += 0.5 * (radii[i]**2 + radii[i-1]**2) * mass_diff[update]
         satisfied = (mass >= m0) 
         mass_prev = mass
-        radius += dr
-        # log progress using info level
-        percent = 100 * np.count_nonzero(satisfied) / satisfied.size 
-        logger.info(f"⏳ Radius: {radius:.2f}, Progress: {percent:.2f}%")
 
     D /= np.sqrt(m0)
-    # if we never reach m0, just apply ceiling
     D[~satisfied] = np.max(D)
     D = np.sqrt(D)
 
-    return D
+    end = time.time()
+    duration = end - start
+
+    print("----- DISTANCE COMPUTATION STATISTICS -----")
+    print(f"Finished computing distance field in {duration} seconds")
+    print(f"Heaviest ball of radius {stroke_radius}: mass = {m0}")
+    print("Checked {} different radii from [{},{}]".format(len(radii), radii[0], radii[-1]))
+
+    return D, m0
 
 def distance_to_measure_gpu(measure, stroke_radius=1, dr=0.05):
    '''
@@ -164,8 +176,13 @@ def distance_to_measure_gpu(measure, stroke_radius=1, dr=0.05):
        mass_diff = mass - mass_prev
        update = (mass < m0) & ~satisfied 
        # add wasserstein distance contribution
-       D[update] += 0.5 * (radii[i]**2 + radii[i-1]**2) * mass_diff[update]
-       satisfied = (mass >= m0) #| satisfied
+       #D[update] += 0.5 * (radii[i]**2 + radii[i-1]**2) * mass_diff[update]
+       # gpu optimization (?)
+       contrib = 0.5 * (radii[i]**2 + radii[i-1]**2) * mass_diff
+       D = cp.where(update, D + contrib, D)
+       satisfied |= (mass >= m0)
+
+       #satisfied = (mass >= m0) #| satisfied
        mass_prev = mass
 
    D /= cp.sqrt(m0)
@@ -181,5 +198,94 @@ def distance_to_measure_gpu(measure, stroke_radius=1, dr=0.05):
    return D.get(), m0
 
 
+def distance_to_measure_roi_sparse_cpu_numba(measure, stroke_radius=1, dr=0.05):
+    """
+    Numba-accelerated distance-to-measure function using sparse ROI and local convolutions.
+    Avoids global convolution; operates only at relevant ROI pixels.
+    """
+    h, w = measure.shape
+    rmax = min(3 * stroke_radius, 50)
+
+    # Step 1: Compute m0 (heaviest ball of radius stroke_radius)
+    last_mass = cv2.filter2D(measure, -1, disk_kernel(stroke_radius))
+    m0 = np.max(last_mass)
+
+    # Step 2: Estimate rmin
+    rmin = min(np.sqrt(m0 / (np.pi * np.max(measure))), 0.5)
+    radii = np.linspace(rmin, rmax, int((rmax - rmin) / dr))
+    radii_sq = radii ** 2
+
+    # Step 3: Compute ROI mask
+    kernel_rmax = disk_kernel(rmax)
+    conv_rmax = cv2.filter2D(measure, -1, kernel_rmax)
+    roi_mask = (conv_rmax >= m0)
+    roi_coords = np.argwhere(roi_mask).astype(np.int32)  # shape (N, 2)
+
+    # Allocate output arrays
+    D = np.zeros((h, w), dtype=np.float64)
+    satisfied = np.zeros((h, w), dtype=np.bool_)
+    mass_prev = np.zeros((h, w), dtype=np.float64)
+
+    # Step 4: Process each radius
+    for i in range(len(radii)):
+        r = radii[i]
+        r2 = radii_sq[i]
+        r2_prev = radii_sq[i - 1] if i > 0 else -1.0
+        kernel = disk_kernel(r)
+        D, satisfied, mass_prev = _process_radius_numba(
+            measure, D, satisfied, mass_prev, roi_coords, kernel, m0, r2, r2_prev
+        )
+
+        if np.all(satisfied[roi_mask]):
+            break
+
+    # Final normalization
+    D[~satisfied] = np.max(D)
+    D /= np.sqrt(m0)
+    D = np.sqrt(D)
+
+    return D, m0
+
+
+@njit(parallel=True)
+def _process_radius_numba(measure, D, satisfied, mass_prev, roi_coords, kernel, m0, r2, r2_prev):
+    h, w = measure.shape
+    kH, kW = kernel.shape
+    pad_y = kH // 2
+    pad_x = kW // 2
+
+    for i in prange(roi_coords.shape[0]):
+        y, x = roi_coords[i]
+        if satisfied[y, x]:
+            continue
+
+        y0 = y - pad_y
+        y1 = y + pad_y + 1
+        x0 = x - pad_x
+        x1 = x + pad_x + 1
+
+        if y0 < 0 or y1 > h or x0 < 0 or x1 > w:
+            continue
+
+        local_mass = 0.0
+        for dy in range(kH):
+            for dx in range(kW):
+                yy = y0 + dy
+                xx = x0 + dx
+                local_mass += measure[yy, xx] * kernel[dy, dx]
+
+        mass_diff = local_mass - mass_prev[y, x]
+
+        if r2_prev < 0:
+            D[y, x] = 0.5 * r2 * local_mass
+        elif local_mass < m0:
+            D[y, x] += 0.5 * (r2 + r2_prev) * mass_diff
+
+        if local_mass >= m0:
+            satisfied[y, x] = True
+
+        mass_prev[y, x] = local_mass
+
+    return D, satisfied, mass_prev
 # if __name__ == "__main__":
 #
