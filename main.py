@@ -6,6 +6,7 @@ from ui_viewer import Ui_MainWindow
 from image_processing import *
 from distance_to_measure import *
 from curve_extraction import *
+from vector_utils import *
 
 logging.basicConfig(
         level=logging.INFO,
@@ -48,6 +49,7 @@ class MainWindow(QMainWindow):
         self.ui.load_image_pushbutton.clicked.connect(self.load_image_from_file)
         self.ui.original_image_radiobutton.toggled.connect(self.toggle_original_image)
         self.ui.distance_radiobutton.toggled.connect(self.toggle_distance_function)
+        self.ui.clean_canvas_radiobutton.toggled.connect(self.toggle_clean_canvas)
 
         self.ui.stroke_width_slider.sliderMoved.connect(self.update_on_move_stroke_width)
         self.ui.stroke_width_slider.sliderReleased.connect(self.update_on_release_stroke_width)
@@ -56,8 +58,13 @@ class MainWindow(QMainWindow):
         self.ui.isovalue_slider.sliderMoved.connect(self.update_on_move_iso_value)
         self.ui.isovalue_slider.sliderReleased.connect(self.update_on_release_iso_value)
 
-
         self.ui.level_set_contour_checkbox.stateChanged.connect(self.toggle_boundary)
+
+
+        self.ui.upsampling_combobox.currentIndexChanged.connect(self.update_sampling)
+
+
+        self.ui.export_svg_pushbutton.clicked.connect(self.export_contour_svg)
         
 
     def uncheck_all_checkboxes(self):
@@ -92,10 +99,8 @@ class MainWindow(QMainWindow):
             return
         # read image and display it
         self.base_image = 255 - process_image(file_path, padding=0)
-        self.base_image = cv2.resize(self.base_image, None, fx=2, fy=2, interpolation=cv2.INTER_LINEAR)
-        self.image_measure = normalize_to_measure(self.base_image)
-        #self.boundary_measure  = normalize_to_measure(compute_sobel_boundary(self.base_image))
-
+        self.update_sampling()
+        self.ui.original_image_radiobutton.setChecked(True)
 
       
     def extract_one_stable_manifold(self):
@@ -137,12 +142,13 @@ class MainWindow(QMainWindow):
         Performs relevant computation ON RELEASE of isovalue slider
         '''
         global MIN_ISO_VALUE, MAX_ISO_VALUE
-        self.stroke_width = self.get_stroke_width()
-        self.ui.stroke_width_display.display(self.stroke_width)
-        self.distance_function, _ = distance_to_measure_roi_sparse_cpu_numba(self.image_measure, 0.5*self.stroke_width)
-        MAX_ISO_VALUE = np.max(self.distance_function)
-        MIN_ISO_VALUE = np.min(self.distance_function)
-        self.toggle_distance_function()
+        if self.image_measure is not None:
+            self.stroke_width = self.get_stroke_width()
+            self.ui.stroke_width_display.display(self.stroke_width)
+            self.distance_function, _ = distance_to_measure_gpu_sparse(self.image_measure, 0.5*self.stroke_width)
+            MAX_ISO_VALUE = np.max(self.distance_function)
+            MIN_ISO_VALUE = np.min(self.distance_function)
+            self.toggle_distance_function()
 
     def update_on_release_iso_value(self):
         '''
@@ -158,18 +164,44 @@ class MainWindow(QMainWindow):
         Performs relevant computation ON RELEASE of isovalue slider
         '''
         pass
-        
+
+    def update_sampling(self):
+        '''
+        Modifies the sampling rate of input image
+        '''
+
+        match self.ui.upsampling_combobox.currentText():
+            case "None":
+                self.image_measure = normalize_to_measure(self.base_image)
+            case "2x Naive":
+                self.image_measure = cv2.resize(self.base_image, None, fx=2, fy=2, interpolation=cv2.INTER_LINEAR)
+                self.image_measure = normalize_to_measure(self.image_measure)
+            case "4x Naive":
+                self.image_measure = cv2.resize(self.base_image, None, fx=4, fy=4, interpolation=cv2.INTER_LINEAR)
+                self.image_measure = normalize_to_measure(self.image_measure)
+            case _:
+                self.image_measure = normalize_to_measure(self.base_image)
+
+        self.toggle_original_image()
+
+
+    def export_contour_svg(self):
+        if self.boundary_contours is not None:
+            self.boundary_contours = find_contours(self.distance_function, self.isovalue, fully_connected='high')
+            self.boundary_contours = resample_contours(self.boundary_contours, 0.5, 1e-5)
+            export_contours_to_svg(self.boundary_contours, "output.svg")
 
     ### Toggle Functions
     def toggle_original_image(self):
         if self.ui.original_image_radiobutton.isChecked():
-            self.ui.mpl_widget.show_image(self.base_image, cmap='gray')
+            self.ui.mpl_widget.show_image(self.image_measure, cmap='gray')
 
     def toggle_complement_image(self):
         pass
 
     def toggle_clean_canvas(self):
-        pass
+        if self.ui.clean_canvas_radiobutton.isChecked():
+            self.ui.mpl_widget.show_blank_image()
 
     def toggle_distance_function(self):
         if self.ui.distance_radiobutton.isChecked():

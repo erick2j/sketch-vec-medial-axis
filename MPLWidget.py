@@ -26,7 +26,7 @@ class MPLWidget(QtWidgets.QWidget):
         self.axes = self.figure.add_subplot(111)
         self.axes.set_axis_off()
         self.axes.set_frame_on(True)
-        self.figure.set_layout_engine('constrained')
+        #self.figure.set_layout_engine('constrained')
 
         # store the current image being displayed
         self.current_image = None
@@ -73,13 +73,16 @@ class MPLWidget(QtWidgets.QWidget):
 
     def show_image(self, img, cmap='pink', normalize=False):
         '''
+        Display an image on the axes.
         '''
-        if self.current_image is not None:
-            self.current_image.remove()
 
         if img is None:
             self.show_blank_image()
             return
+
+        # clear previous image
+        if self.current_image is not None:
+            self.current_image.remove()
 
         if normalize:
             norm = Normalize(vmin=np.min(img), vmax=np.max(img), clip=False)
@@ -92,24 +95,36 @@ class MPLWidget(QtWidgets.QWidget):
         # display options
         self.axes.axis('image')
         self.axes.axis('off')
-        #self.figure.tight_layout()
+        self.axes.set_aspect('equal')
 
         # redraw canvas
         self.canvas.draw()
 
-    def show_blank_image(self):
+    def show_blank_image(self, shape=None):
         """
         Displays a blank image on the widget.
         """
-        #if self.current_image is not None:
-        img_shape = self.current_image.get_array().shape
-        if len(img_shape) == 2:
-           img_shape = (*img_shape, 3)
-        blank_img = np.ones(img_shape, dtype=np.uint8) * 255  
-        #self.current_image.remove()
-        self.current_image = self.axes.imshow(blank_img, cmap='gray')
+
+        if shape is None and self.current_image is not None:
+            shape = self.current_image.get_array().shape
+        else:
+            shape = (512, 512)
+
+        if len(shape) == 2:
+            shape = (*shape, 3)
+
+        blank_img = np.ones(shape, dtype=np.uint8) * 255
+
+        if self.current_image is not None:
+            self.current_image.remove()
+
+        self.current_image = self.axes.imshow(blank_img, cmap='gray', interpolation='None', origin='upper')
+        self.axes.set_xlim(0, blank_img.shape[1])
+        self.axes.set_ylim(blank_img.shape[0], 0)
         self.axes.axis('image')
         self.axes.axis('off')
+        
+        #self.axes.set_aspect('equal')
         self.canvas.draw()
 
             

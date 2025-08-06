@@ -2,6 +2,7 @@ pip==25.2
 numba
 setuptools
 triangle
+svgwrite
 opencv-python
 scikit-image==0.25.2
 PySide6==6.9.0

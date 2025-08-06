@@ -287,5 +287,71 @@ def _process_radius_numba(measure, D, satisfied, mass_prev, roi_coords, kernel, 
         mass_prev[y, x] = local_mass
 
     return D, satisfied, mass_prev
+
+def distance_to_measure_gpu_sparse(measure, stroke_radius=1, dr=0.05):
+    """
+    Compute the distance-to-measure function on the GPU using CuPy,
+    while skipping pixels that cannot possibly reach the mass threshold m0.
+    """
+    start = time.perf_counter()
+
+    # Transfer measure to GPU
+    measure_gpu = cp.array(measure, dtype=cp.float32)
+
+    # Clamp rmax
+    rmax = min(10 * stroke_radius, 50)
+
+    # Compute m0 from CPU (cv2 is still used here)
+    from cv2 import filter2D
+    m0 = np.max(filter2D(measure.astype(np.float32), -1, disk_kernel(stroke_radius)))
+
+    # Estimate rmin
+    rmin = min(np.sqrt(m0 / (np.pi * np.max(measure))), 0.5)
+    radii = cp.array(np.geomspace(rmin, rmax, int((rmax - rmin) / dr)))
+    radii_sq = radii**2
+
+    # Initialize arrays
+    D = cp.zeros_like(measure_gpu)
+    satisfied = cp.zeros_like(measure_gpu, dtype=cp.bool_)
+    mass_prev = cp.zeros_like(measure_gpu)
+
+    # Compute roi_mask using disk_kernel(rmax)
+    kernel_rmax = cp.array(disk_kernel(rmax), dtype=cp.float32)
+    mass_rmax = cps.convolve(measure_gpu, kernel_rmax, mode="constant")
+    roi_mask = (mass_rmax >= m0)
+
+    # First radius
+    kernel0 = cp.array(disk_kernel(radii[0].item()), dtype=cp.float32)
+    mass = cps.convolve(measure_gpu, kernel0, mode="constant")
+    D = 0.5 * radii_sq[0] * mass
+    satisfied = mass >= m0
+    mass_prev = mass
+
+    # Iterate through radii
+    for i in range(1, len(radii)):
+        kernel = cp.array(disk_kernel(radii[i].item()), dtype=cp.float32)
+        mass = cps.convolve(measure_gpu, kernel, mode="constant")
+        mass_diff = mass - mass_prev
+
+        contrib = 0.5 * (radii_sq[i] + radii_sq[i - 1]) * mass_diff
+        #update_mask = (~satisfied) & roi_mask & (mass < m0)
+        update_mask = (~satisfied) & (mass < m0)
+        D[update_mask] += contrib[update_mask]
+
+        satisfied = satisfied | (mass >= m0)
+        mass_prev = mass
+
+    # Finalize
+    D[~satisfied] = cp.max(D)
+    D = D / cp.sqrt(m0)
+    D = cp.sqrt(D)
+
+    elapsed = (time.perf_counter() - start) * 1000
+    logger.info(f"[GPU-SPARSE] Distance computation completed in {elapsed:.2f} ms")
+    logger.debug(f"[GPU-SPARSE] Checked {len(radii)} radii from {rmin:.2f} to {rmax:.2f}")
+    logger.debug(f"[GPU-SPARSE] m0 = {m0:.6f}, max D = {cp.max(D).item():.4f}")
+
+    return D.get(), m0
+
 # if __name__ == "__main__":
 #
