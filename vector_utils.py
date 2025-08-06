@@ -1,5 +1,9 @@
 import svgwrite
 import numpy as np
+from shapely.geometry import LineString
+
+import svgwrite
+import numpy as np
 
 def export_contours_to_svg(contours, filename, stroke='black', stroke_width=1.0, height=None, width=None):
     """
@@ -12,7 +16,11 @@ def export_contours_to_svg(contours, filename, stroke='black', stroke_width=1.0,
         stroke_width: stroke thickness
         height, width: optional dimensions of canvas
     """
-    # Determine canvas size if not given
+    if not contours:
+        print("[SVG] No contours to export.")
+        return
+
+    # Determine canvas size
     all_points = np.vstack(contours)
     max_y, max_x = np.max(all_points, axis=0)
     min_y, min_x = np.min(all_points, axis=0)
@@ -22,9 +30,7 @@ def export_contours_to_svg(contours, filename, stroke='black', stroke_width=1.0,
     dwg = svgwrite.Drawing(filename, size=(svg_width, svg_height))
 
     for contour in contours:
-        # Convert (row, col) → (x, y)
-        points = contour[:, [1, 0]]
-        # Convert to SVG path string
+        points = contour[:, [1, 0]]  # (row, col) → (x, y)
         path_data = ["M {:.3f},{:.3f}".format(*points[0])]
         for pt in points[1:]:
             path_data.append("L {:.3f},{:.3f}".format(*pt))
@@ -34,4 +40,5 @@ def export_contours_to_svg(contours, filename, stroke='black', stroke_width=1.0,
 
     dwg.save()
     print(f"[SVG] Exported {len(contours)} contours to {filename}")
+
 

@@ -1,15 +1,15 @@
 import numpy as np
 import logging
 import time
+import networkx as nx
+from scipy.spatial import Voronoi
+from shapely.geometry import Point, Polygon, LineString
 
 logger = logging.getLogger(__name__)
 
 ######################################
 #####  CONTOUR FIXING UTILITIES  ##### 
 ######################################
-
-
-
 
 def resample_contours(contours : list[np.ndarray], spacing: float  = 0.5, tol: float = 1e-5) -> list[np.ndarray]:
     """
@@ -51,3 +51,7 @@ def resample_contours(contours : list[np.ndarray], spacing: float  = 0.5, tol: f
     logger.info(f"[CONTOUR CLEANING] Resampled {len(resampled_contours)} contours in {elapsed_ms:.2f} ms")
 
     return resampled_contours
+
+######################################
+#####  MEDIAL AXIS STUFF         ##### 
+######################################
