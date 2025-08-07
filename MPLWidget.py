@@ -176,6 +176,76 @@ class MPLWidget(QtWidgets.QWidget):
         self.canvas.draw()
 
 
+    def plot_voronoi_diagram(self, graph, color='blue', linewidth=1.0):
+        '''
+        Plots the Voronoi diagram from a VectorSketch 
+        '''
+        if graph is None or graph.number_of_edges() == 0:
+            return
+
+        # make sure to clear any previously drawn voronoi diagram
+        self.hide_voronoi_diagram()
+
+        # Extract node positions into array (sorted by node index for consistency)
+        node_ids = sorted(graph.nodes)
+        id_to_index = {node: i for i, node in enumerate(node_ids)}
+        positions = np.array([graph.nodes[n]['position'] for n in node_ids])  # shape (N, 2)
+
+        # Build edge list in index form and convert (row, col) → (x, y)
+        edge_array = np.array([
+            [id_to_index[u], id_to_index[v]] for u, v in graph.edges
+        ])
+        segments = positions[edge_array]  # shape (E, 2, 2)
+        segments = segments[:, :, ::-1]   # convert to (x, y) for display
+
+        # Plot with LineCollection
+        lines = LineCollection(segments, colors=color, linewidths=linewidth, zorder=3)
+        self.axes.add_collection(lines)
+        self.artists['voronoi diagram'] = lines
+        self.canvas.draw()
+
+
+    def plot_medial_axis(self, graph, color='red', linewidth=1.0):
+        """
+        """
+        if graph is None or graph.number_of_edges() == 0:
+            return
+
+        self.hide_medial_axis()
+
+        # Extract node positions into array (sorted by node index for consistency)
+        node_ids = sorted(graph.nodes)
+        id_to_index = {node: i for i, node in enumerate(node_ids)}
+        positions = np.array([graph.nodes[n]['position'] for n in node_ids])  # shape (N, 2)
+
+        # Build edge list in index form and convert (row, col) → (x, y)
+        edge_array = np.array([
+            [id_to_index[u], id_to_index[v]] for u, v in graph.edges
+        ])
+        segments = positions[edge_array]  # shape (E, 2, 2)
+        segments = segments[:, :, ::-1]   # convert to (x, y) for display
+
+        # Plot with LineCollection
+        lines = LineCollection(segments, colors=color, linewidths=linewidth, zorder=3)
+        self.axes.add_collection(lines)
+        self.artists['medial_axis'] = lines
+        self.canvas.draw()
+
+
+    def hide_medial_axis(self):
+        if 'medial_axis' in self.artists:
+            self.artists['medial_axis'].remove()
+            del self.artists['medial_axis']
+            self.canvas.draw()
+
+    def hide_voronoi_diagram(self):
+        if 'voronoi_diagram' in self.artists:
+            self.artists['voronoi_diagram'].remove()
+            del self.artists['voronoi_diagram']
+            self.canvas.draw()
+
+
+
 
 
 

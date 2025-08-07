@@ -59,6 +59,8 @@ class MainWindow(QMainWindow):
         self.ui.isovalue_slider.sliderReleased.connect(self.update_on_release_iso_value)
 
         self.ui.level_set_contour_checkbox.stateChanged.connect(self.toggle_boundary)
+        self.ui.stroke_graph_checkbox.stateChanged.connect(self.toggle_medial_axis)
+        self.ui.voronoi_diagram_checkbox.stateChanged.connect(self.toggle_voronoi_diagram)
 
 
         self.ui.upsampling_combobox.currentIndexChanged.connect(self.update_sampling)
@@ -145,7 +147,7 @@ class MainWindow(QMainWindow):
         if self.image_measure is not None:
             self.stroke_width = self.get_stroke_width()
             self.ui.stroke_width_display.display(self.stroke_width)
-            self.distance_function, _ = distance_to_measure_gpu_sparse(self.image_measure, 0.5*self.stroke_width)
+            self.distance_function, _ = distance_to_measure_roi_sparse_cpu_numba(self.image_measure, 0.5*self.stroke_width)
             MAX_ISO_VALUE = np.max(self.distance_function)
             MIN_ISO_VALUE = np.min(self.distance_function)
             self.toggle_distance_function()
@@ -158,6 +160,8 @@ class MainWindow(QMainWindow):
             self.boundary_contours = find_contours(self.distance_function, self.isovalue, fully_connected='high')
             self.boundary_contours = resample_contours(self.boundary_contours, 0.5, 1e-5)
             self.toggle_boundary()
+            self.voronoi_diagram = fast_voronoi_diagram(unique_contour_points(self.boundary_contours))
+            self.medial_axis = fast_medial_axis(self.boundary_contours)
         
     def update_on_release_persistence_threshold(self):
         '''
@@ -196,9 +200,6 @@ class MainWindow(QMainWindow):
         if self.ui.original_image_radiobutton.isChecked():
             self.ui.mpl_widget.show_image(self.image_measure, cmap='gray')
 
-    def toggle_complement_image(self):
-        pass
-
     def toggle_clean_canvas(self):
         if self.ui.clean_canvas_radiobutton.isChecked():
             self.ui.mpl_widget.show_blank_image()
@@ -217,8 +218,18 @@ class MainWindow(QMainWindow):
         else:
             self.ui.mpl_widget.hide_levelset_contours()
 
-    def toggle_boundary_current(self):
-        pass
+    def toggle_voronoi_diagram(self):
+        if self.voronoi_diagram is not None:
+            self.ui.mpl_widget.plot_voronoi_diagram(self.voronoi_diagram)
+        else:
+            self.ui.mpl_widget.hide_voronoi_diagram()
+     
+
+    def toggle_medial_axis(self):
+        if self.medial_axis is not None:
+            self.ui.mpl_widget.plot_medial_axis(self.medial_axis)
+        else:
+            self.ui.mpl_widget.hide_medial_axis()
         
 
     def toggle_image_measure_option(self):
