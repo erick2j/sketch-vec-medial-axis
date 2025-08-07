@@ -19,7 +19,8 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFrame,
     QGridLayout, QGroupBox, QHBoxLayout, QLCDNumber,
     QLabel, QMainWindow, QMenuBar, QPushButton,
     QRadioButton, QScrollArea, QSizePolicy, QSlider,
-    QStatusBar, QTabWidget, QVBoxLayout, QWidget)
+    QSpinBox, QStatusBar, QTabWidget, QVBoxLayout,
+    QWidget)
 
 from MPLWidget import MPLWidget
 
@@ -367,16 +368,32 @@ class Ui_MainWindow(object):
         self.ImageTabWidget.addTab(self.ImageVisualizationTab, "")
         self.upsampling_tab = QWidget()
         self.upsampling_tab.setObjectName(u"upsampling_tab")
-        self.verticalLayout_8 = QVBoxLayout(self.upsampling_tab)
-        self.verticalLayout_8.setObjectName(u"verticalLayout_8")
+        self.gridLayout_4 = QGridLayout(self.upsampling_tab)
+        self.gridLayout_4.setObjectName(u"gridLayout_4")
+        self.gaussian_blur_checkbox = QCheckBox(self.upsampling_tab)
+        self.gaussian_blur_checkbox.setObjectName(u"gaussian_blur_checkbox")
+
+        self.gridLayout_4.addWidget(self.gaussian_blur_checkbox, 1, 0, 1, 1)
+
+        self.gaussian_blur_spinbox = QSpinBox(self.upsampling_tab)
+        self.gaussian_blur_spinbox.setObjectName(u"gaussian_blur_spinbox")
+        self.gaussian_blur_spinbox.setWrapping(False)
+
+        self.gridLayout_4.addWidget(self.gaussian_blur_spinbox, 1, 1, 1, 1)
+
         self.upsampling_combobox = QComboBox(self.upsampling_tab)
         self.upsampling_combobox.addItem("")
         self.upsampling_combobox.addItem("")
         self.upsampling_combobox.addItem("")
         self.upsampling_combobox.setObjectName(u"upsampling_combobox")
+        sizePolicy17 = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        sizePolicy17.setHorizontalStretch(0)
+        sizePolicy17.setVerticalStretch(0)
+        sizePolicy17.setHeightForWidth(self.upsampling_combobox.sizePolicy().hasHeightForWidth())
+        self.upsampling_combobox.setSizePolicy(sizePolicy17)
         self.upsampling_combobox.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
 
-        self.verticalLayout_8.addWidget(self.upsampling_combobox)
+        self.gridLayout_4.addWidget(self.upsampling_combobox, 0, 0, 1, 2)
 
         self.ImageTabWidget.addTab(self.upsampling_tab, "")
 
@@ -394,11 +411,11 @@ class Ui_MainWindow(object):
         self.verticalLayout_3.setObjectName(u"verticalLayout_3")
         self.scrollArea = QScrollArea(self.OverlaysTab)
         self.scrollArea.setObjectName(u"scrollArea")
-        sizePolicy17 = QSizePolicy(QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.Preferred)
-        sizePolicy17.setHorizontalStretch(0)
-        sizePolicy17.setVerticalStretch(0)
-        sizePolicy17.setHeightForWidth(self.scrollArea.sizePolicy().hasHeightForWidth())
-        self.scrollArea.setSizePolicy(sizePolicy17)
+        sizePolicy18 = QSizePolicy(QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.Preferred)
+        sizePolicy18.setHorizontalStretch(0)
+        sizePolicy18.setVerticalStretch(0)
+        sizePolicy18.setHeightForWidth(self.scrollArea.sizePolicy().hasHeightForWidth())
+        self.scrollArea.setSizePolicy(sizePolicy18)
         self.scrollArea.setFrameShape(QFrame.NoFrame)
         self.scrollArea.setLineWidth(0)
         self.scrollArea.setMidLineWidth(0)
@@ -410,11 +427,11 @@ class Ui_MainWindow(object):
         self.verticalLayout_5.setObjectName(u"verticalLayout_5")
         self.voronoi_diagram_checkbox = QCheckBox(self.scrollAreaWidgetContents)
         self.voronoi_diagram_checkbox.setObjectName(u"voronoi_diagram_checkbox")
-        sizePolicy18 = QSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.MinimumExpanding)
-        sizePolicy18.setHorizontalStretch(0)
-        sizePolicy18.setVerticalStretch(0)
-        sizePolicy18.setHeightForWidth(self.voronoi_diagram_checkbox.sizePolicy().hasHeightForWidth())
-        self.voronoi_diagram_checkbox.setSizePolicy(sizePolicy18)
+        sizePolicy19 = QSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.MinimumExpanding)
+        sizePolicy19.setHorizontalStretch(0)
+        sizePolicy19.setVerticalStretch(0)
+        sizePolicy19.setHeightForWidth(self.voronoi_diagram_checkbox.sizePolicy().hasHeightForWidth())
+        self.voronoi_diagram_checkbox.setSizePolicy(sizePolicy19)
         self.voronoi_diagram_checkbox.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
 
         self.verticalLayout_5.addWidget(self.voronoi_diagram_checkbox)
@@ -429,11 +446,11 @@ class Ui_MainWindow(object):
 
         self.object_angle_checkbox = QCheckBox(self.scrollAreaWidgetContents)
         self.object_angle_checkbox.setObjectName(u"object_angle_checkbox")
-        sizePolicy19 = QSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
-        sizePolicy19.setHorizontalStretch(0)
-        sizePolicy19.setVerticalStretch(0)
-        sizePolicy19.setHeightForWidth(self.object_angle_checkbox.sizePolicy().hasHeightForWidth())
-        self.object_angle_checkbox.setSizePolicy(sizePolicy19)
+        sizePolicy20 = QSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
+        sizePolicy20.setHorizontalStretch(0)
+        sizePolicy20.setVerticalStretch(0)
+        sizePolicy20.setHeightForWidth(self.object_angle_checkbox.sizePolicy().hasHeightForWidth())
+        self.object_angle_checkbox.setSizePolicy(sizePolicy20)
 
         self.verticalLayout_5.addWidget(self.object_angle_checkbox)
 
@@ -500,7 +517,7 @@ class Ui_MainWindow(object):
 
         self.retranslateUi(MainWindow)
 
-        self.ImageTabWidget.setCurrentIndex(0)
+        self.ImageTabWidget.setCurrentIndex(1)
         self.OverlaysTabWidget.setCurrentIndex(0)
 
 
@@ -526,6 +543,7 @@ class Ui_MainWindow(object):
         self.distance_radiobutton.setText(QCoreApplication.translate("MainWindow", u"Distance Function", None))
         self.clean_canvas_radiobutton.setText(QCoreApplication.translate("MainWindow", u"Clean Canvas", None))
         self.ImageTabWidget.setTabText(self.ImageTabWidget.indexOf(self.ImageVisualizationTab), QCoreApplication.translate("MainWindow", u"Image", None))
+        self.gaussian_blur_checkbox.setText(QCoreApplication.translate("MainWindow", u"Gaussian Blur", None))
         self.upsampling_combobox.setItemText(0, QCoreApplication.translate("MainWindow", u"None", None))
         self.upsampling_combobox.setItemText(1, QCoreApplication.translate("MainWindow", u"2x Naive", None))
         self.upsampling_combobox.setItemText(2, QCoreApplication.translate("MainWindow", u"4x Naive", None))

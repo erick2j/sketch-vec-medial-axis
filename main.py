@@ -51,6 +51,9 @@ class MainWindow(QMainWindow):
         self.ui.distance_radiobutton.toggled.connect(self.toggle_distance_function)
         self.ui.clean_canvas_radiobutton.toggled.connect(self.toggle_clean_canvas)
 
+
+        self.ui.gaussian_blur_checkbox.toggled.connect(self.toggle_gaussian_blur)
+
         self.ui.stroke_width_slider.sliderMoved.connect(self.update_on_move_stroke_width)
         self.ui.stroke_width_slider.sliderReleased.connect(self.update_on_release_stroke_width)
 
@@ -189,6 +192,29 @@ class MainWindow(QMainWindow):
         self.toggle_original_image()
 
 
+    def toggle_gaussian_blur(self):
+        if self.ui.gaussian_blur_checkbox.isChecked():
+            radius = self.ui.gaussian_blur_spinbox.value()
+            print(f"gaussian radius {radius}")
+            ksize = 2 * int(np.ceil(radius)) + 1
+            img = cv2.GaussianBlur(self.base_image, (ksize, ksize), sigmaX=radius)
+            match self.ui.upsampling_combobox.currentText():
+                case "None":
+                    self.image_measure = normalize_to_measure(img)
+                case "2x Naive":
+                    self.image_measure = cv2.resize(img, None, fx=2, fy=2, interpolation=cv2.INTER_LINEAR)
+                    self.image_measure = normalize_to_measure(self.image_measure)
+                case "4x Naive":
+                    self.image_measure = cv2.resize(img, None, fx=4, fy=4, interpolation=cv2.INTER_LINEAR)
+                    self.image_measure = normalize_to_measure(self.image_measure)
+                case _:
+                    self.image_measure = normalize_to_measure(self.base_image)
+            pass
+        else:
+            self.update_sampling()
+
+        self.toggle_original_image()
+
     def export_contour_svg(self):
         if self.boundary_contours is not None:
             self.boundary_contours = find_contours(self.distance_function, self.isovalue, fully_connected='high')
@@ -208,10 +234,6 @@ class MainWindow(QMainWindow):
         if self.ui.distance_radiobutton.isChecked():
             self.ui.mpl_widget.show_image(self.distance_function, normalize=False)
 
-
-    def toggle_boundary_measure(self):
-        pass
-
     def toggle_boundary(self):
         if self.ui.level_set_contour_checkbox.isChecked() and self.boundary_contours is not None:
             self.ui.mpl_widget.plot_contours(self.boundary_contours)
@@ -219,14 +241,14 @@ class MainWindow(QMainWindow):
             self.ui.mpl_widget.hide_levelset_contours()
 
     def toggle_voronoi_diagram(self):
-        if self.voronoi_diagram is not None:
+        if self.ui.voronoi_diagram_checkbox.isChecked() and self.voronoi_diagram is not None:
             self.ui.mpl_widget.plot_voronoi_diagram(self.voronoi_diagram)
         else:
             self.ui.mpl_widget.hide_voronoi_diagram()
      
 
     def toggle_medial_axis(self):
-        if self.medial_axis is not None:
+        if self.ui.stroke_graph_checkbox.isChecked() and self.medial_axis is not None:
             self.ui.mpl_widget.plot_medial_axis(self.medial_axis)
         else:
             self.ui.mpl_widget.hide_medial_axis()
