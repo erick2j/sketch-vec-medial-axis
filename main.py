@@ -52,7 +52,6 @@ class MainWindow(QMainWindow):
         self.ui.clean_canvas_radiobutton.toggled.connect(self.toggle_clean_canvas)
 
 
-        self.ui.gaussian_blur_checkbox.toggled.connect(self.toggle_gaussian_blur)
 
         self.ui.stroke_width_slider.sliderMoved.connect(self.update_on_move_stroke_width)
         self.ui.stroke_width_slider.sliderReleased.connect(self.update_on_release_stroke_width)
@@ -66,7 +65,8 @@ class MainWindow(QMainWindow):
         self.ui.voronoi_diagram_checkbox.stateChanged.connect(self.toggle_voronoi_diagram)
 
 
-        self.ui.upsampling_combobox.currentIndexChanged.connect(self.update_sampling)
+        self.ui.upsampling_combobox.currentIndexChanged.connect(self.compute_image_measure)
+        self.ui.gaussian_blur_checkbox.toggled.connect(self.compute_image_measure)
 
 
         self.ui.export_svg_pushbutton.clicked.connect(self.export_contour_svg)
@@ -104,7 +104,7 @@ class MainWindow(QMainWindow):
             return
         # read image and display it
         self.base_image = 255 - process_image(file_path, padding=0)
-        self.update_sampling()
+        self.compute_image_measure()
         self.ui.original_image_radiobutton.setChecked(True)
 
       
@@ -172,47 +172,38 @@ class MainWindow(QMainWindow):
         '''
         pass
 
-    def update_sampling(self):
-        '''
-        Modifies the sampling rate of input image
-        '''
 
-        match self.ui.upsampling_combobox.currentText():
-            case "None":
-                self.image_measure = normalize_to_measure(self.base_image)
-            case "2x Naive":
-                self.image_measure = cv2.resize(self.base_image, None, fx=2, fy=2, interpolation=cv2.INTER_LINEAR)
-                self.image_measure = normalize_to_measure(self.image_measure)
-            case "4x Naive":
-                self.image_measure = cv2.resize(self.base_image, None, fx=4, fy=4, interpolation=cv2.INTER_LINEAR)
-                self.image_measure = normalize_to_measure(self.image_measure)
-            case _:
-                self.image_measure = normalize_to_measure(self.base_image)
+    def compute_image_measure(self):
+        """
+        Recompute self.image_measure from self.base_image based on:
+          - Gaussian blur checkbox + radius
+          - Upsampling combobox
+        Then update the display.
+        """
+        img = self.base_image
 
-        self.toggle_original_image()
-
-
-    def toggle_gaussian_blur(self):
+        # optional gaussian blur
         if self.ui.gaussian_blur_checkbox.isChecked():
-            radius = self.ui.gaussian_blur_spinbox.value()
-            print(f"gaussian radius {radius}")
-            ksize = 2 * int(np.ceil(radius)) + 1
-            img = cv2.GaussianBlur(self.base_image, (ksize, ksize), sigmaX=radius)
-            match self.ui.upsampling_combobox.currentText():
-                case "None":
-                    self.image_measure = normalize_to_measure(img)
-                case "2x Naive":
-                    self.image_measure = cv2.resize(img, None, fx=2, fy=2, interpolation=cv2.INTER_LINEAR)
-                    self.image_measure = normalize_to_measure(self.image_measure)
-                case "4x Naive":
-                    self.image_measure = cv2.resize(img, None, fx=4, fy=4, interpolation=cv2.INTER_LINEAR)
-                    self.image_measure = normalize_to_measure(self.image_measure)
-                case _:
-                    self.image_measure = normalize_to_measure(self.base_image)
-            pass
-        else:
-            self.update_sampling()
+            radius = float(self.ui.gaussian_blur_spinbox.value())
+            if radius > 0:
+                ksize = 2 * int(np.ceil(radius)) + 1
+                img = cv2.GaussianBlur(img, (ksize, ksize), sigmaX=radius)
 
+        # optional upsampling
+        match self.ui.upsampling_combobox.currentText():
+            case "2x Naive":
+                img = cv2.resize(img, None, fx=2, fy=2, interpolation=cv2.INTER_NEAREST)
+            case "4x Naive":
+                img = cv2.resize(img, None, fx=4, fy=4, interpolation=cv2.INTER_NEAREST)
+            case "2x Bilinear":
+                img = cv2.resize(img, None, fx=2, fy=2, interpolation=cv2.INTER_LINEAR)
+            case "4x Bilinear":
+                img = cv2.resize(img, None, fx=4, fy=4, interpolation=cv2.INTER_LINEAR)
+            case _:  # "None" or anything else
+                pass
+
+        # 3) Normalize and show
+        self.image_measure = normalize_to_measure(img)
         self.toggle_original_image()
 
     def export_contour_svg(self):

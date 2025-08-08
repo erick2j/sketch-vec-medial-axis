@@ -8,6 +8,7 @@ if platform.system() != 'Darwin':
     import cupyx.scipy.ndimage as cps
 import cv2
 from numba import njit, prange
+import matplotlib.pyplot as plt
 
 
 logger = logging.getLogger(__name__)
@@ -208,7 +209,16 @@ def distance_to_measure_roi_sparse_cpu_numba(measure, stroke_radius=1, dr=0.05):
 
     # Step 1: Compute m0 (heaviest ball of radius stroke_radius)
     last_mass = cv2.filter2D(measure, -1, disk_kernel(stroke_radius))
-    m0 = np.max(last_mass)
+    m0 = 0.5* (np.max(last_mass) - np.min(last_mass)) 
+
+
+    # Plot histogram
+    plt.figure()
+    plt.hist(last_mass[last_mass>1e-5].ravel(), bins=50, color='skyblue', edgecolor='black')
+    plt.title("Histogram of Mass Values")
+    plt.xlabel("Mass")
+    plt.ylabel("Frequency")
+    plt.show()
 
     # Step 2: Estimate rmin
     rmin = min(np.sqrt(m0 / (np.pi * np.max(measure))), 0.5)
@@ -243,6 +253,15 @@ def distance_to_measure_roi_sparse_cpu_numba(measure, stroke_radius=1, dr=0.05):
     D[~satisfied] = np.max(D)
     D /= np.sqrt(m0)
     D = np.sqrt(D)
+
+    plt.figure()
+    plt.hist(D.ravel(), bins=50, color='red', edgecolor='black')
+    plt.title("Histogram of Distance Values")
+    plt.xlabel("Distance")
+    plt.ylabel("Frequency")
+    plt.show()
+
+
 
     return D, m0
 

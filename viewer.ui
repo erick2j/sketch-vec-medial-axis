@@ -637,6 +637,16 @@
                 </item>
                 <item>
                  <property name="text">
+                  <string>2x Bilinear</string>
+                 </property>
+                </item>
+                <item>
+                 <property name="text">
+                  <string>4x Bilinear</string>
+                 </property>
+                </item>
+                <item>
+                 <property name="text">
                   <string>2x Naive</string>
                  </property>
                 </item>
