@@ -164,7 +164,8 @@ class MainWindow(QMainWindow):
             self.boundary_contours = resample_contours(self.boundary_contours, 0.5, 1e-5)
             self.toggle_boundary()
             self.voronoi_diagram = fast_voronoi_diagram(unique_contour_points(self.boundary_contours))
-            self.medial_axis = fast_medial_axis(self.boundary_contours)
+            self.medial_axis = fast_medial_axis(self.boundary_contours, self.distance_function, self.isovalue)
+            self.pruned_medial_axis = prune_by_object_angle(self.medial_axis, unique_contour_points(self.boundary_contours), np.pi/2.1)
         
     def update_on_release_persistence_threshold(self):
         '''
@@ -239,8 +240,8 @@ class MainWindow(QMainWindow):
      
 
     def toggle_medial_axis(self):
-        if self.ui.stroke_graph_checkbox.isChecked() and self.medial_axis is not None:
-            self.ui.mpl_widget.plot_medial_axis(self.medial_axis)
+        if self.ui.stroke_graph_checkbox.isChecked() and self.pruned_medial_axis is not None:
+            self.ui.mpl_widget.plot_medial_axis(self.pruned_medial_axis)
         else:
             self.ui.mpl_widget.hide_medial_axis()
         

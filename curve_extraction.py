@@ -3,7 +3,7 @@ import logging
 import time
 import triangle as tr
 import networkx as nx
-from scipy.spatial import Voronoi
+from scipy.spatial import KDTree 
 from shapely.geometry import Point, Polygon, LineString
 from shapely.geometry import Point, LinearRing, MultiPolygon
 from shapely.prepared import prep
@@ -138,38 +138,16 @@ def fast_voronoi_diagram(points):
     points : ndarray
         Array of shape (N, 2) containing (row, col) coordinates of boundary points.
     """       
-    G = nx.Graph()
     # compute voronoi diagram using the Triangle library
     positions, edges, _, _ = tr.voronoi(points[:, [0,1]])
     # prune voronoi diagram using the bounding box of input seed points
     pos_dict, pruned_edges = bounding_box_voronoi_pruning(positions[:,[0,1]], edges, points)
     # construct voronoi diagram
+    G = nx.Graph()
     G.add_edges_from(pruned_edges)
     nx.set_node_attributes(G, pos_dict, 'position')
     return G
 
-
-def fast_medial_axis(contours):
-    # Step 1: Flatten all unique boundary points
-    all_points = np.vstack(contours)
-    
-    # Step 2: Compute Voronoi diagram using `triangle`
-    positions, edges, _, _ = tr.voronoi(all_points[:, [0,1]])
-
-    # Step 3: Clean/prune Voronoi edges based on polygon containment
-    pos_dict = {i: pt for i, pt in enumerate(positions)}
-    G = nx.Graph()
-    G.add_edges_from(edges)
-    nx.set_node_attributes(G, pos_dict, 'position')
-
-    # Step 4: Build MultiPolygon from CCW/CW contours
-    poly = build_bounding_polygon(contours)
-    prepared_poly = prep(poly)
-
-    # Step 5: Keep only nodes inside polygon
-    inside = [n for n, p in pos_dict.items() if prepared_poly.contains(Point(p))]
-    medial_axis = G.subgraph(inside).copy()
-    return medial_axis
 
 def build_bounding_polygon(contours):
     exteriors, interiors = [], []
@@ -185,4 +163,79 @@ def build_bounding_polygon(contours):
         holes = [hole.exterior for hole in interiors if exterior.contains(hole)]
         polygons.append(Polygon(exterior.exterior, holes) if holes else exterior)
     return MultiPolygon(polygons)
+
+
+def fast_medial_axis(contours, field: np.ndarray, isovalue: float):
+    all_points = np.vstack(contours)
+    positions, edges, _, _ = tr.voronoi(all_points[:, [0,1]])
+
+    pos_array = np.array(positions)
+    row_idx = np.round(pos_array[:, 0]).astype(int)
+    col_idx = np.round(pos_array[:, 1]).astype(int)
+
+    h, w = field.shape
+    valid_mask = np.full(len(pos_array), False, dtype=bool)
+
+    inside_bounds = (
+        (0 <= row_idx) & (row_idx < h) &
+        (0 <= col_idx) & (col_idx < w)
+    )
+
+    if np.any(inside_bounds):
+        idx_in_bounds = np.where(inside_bounds)[0]
+        valid_mask[idx_in_bounds] = field[row_idx[idx_in_bounds], col_idx[idx_in_bounds]] <= isovalue
+
+    valid_indices = np.where(valid_mask)[0]
+    pos_dict = {i: tuple(pos_array[i]) for i in valid_indices}
+
+    edge_array = np.array(edges)
+    edge_mask = np.isin(edge_array[:, 0], valid_indices) & np.isin(edge_array[:, 1], valid_indices)
+    valid_edges = edge_array[edge_mask]
+
+    G = nx.Graph()
+    G.add_edges_from((int(i), int(j)) for i, j in valid_edges)
+    nx.set_node_attributes(G, pos_dict, 'position')
+
+    return G
+
+def prune_by_object_angle(graph: nx.Graph, boundary_points: np.ndarray, angle_threshold: float):
+    positions = nx.get_node_attributes(graph, 'position')
+    if not positions:
+        return graph
+
+    node_pos = {n: np.array(p) for n, p in positions.items()}
+    kdtree = KDTree(boundary_points)
+    G = graph.copy()
+
+    def object_angle(u, v):
+        midpoint = (node_pos[u] + node_pos[v]) / 2.0
+        dists, idxs = kdtree.query(midpoint, k=2)
+        a, b = boundary_points[idxs[0]], boundary_points[idxs[1]]
+        v1, v2 = a - midpoint, b - midpoint
+        cos_theta = np.clip(np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2)), -1.0, 1.0)
+        return np.arccos(cos_theta) / 2.0
+
+    leaves = [n for n in G.nodes if G.degree[n] == 1]
+    removed = set()
+
+    while leaves:
+        current = leaves.pop(0)
+        if current in removed:
+            continue
+
+        neighbors = list(G.neighbors(current))
+        if not neighbors:
+            continue
+
+        neighbor = neighbors[0]
+        angle = object_angle(current, neighbor)
+
+        if angle < angle_threshold:
+            G.remove_node(current)
+            removed.add(current)
+
+            if G.degree(neighbor) == 1 and neighbor not in removed:
+                leaves.append(neighbor)
+
+    return G
 
