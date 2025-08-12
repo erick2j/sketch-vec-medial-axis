@@ -127,12 +127,11 @@ class MPLWidget(QtWidgets.QWidget):
         #self.axes.set_aspect('equal')
         self.canvas.draw()
 
-            
-    def plot_contours(self, contours):
-        '''
-        Plots a set of points on the figure
-        '''
 
+    def plot_contours(self, contours):
+        """
+        Vectorized + fast rendering of all contours.
+        """
         # Clear previous plots
         for contour_plot in self.levelset_contour_plots:
             contour_plot.remove()
@@ -141,27 +140,29 @@ class MPLWidget(QtWidgets.QWidget):
         path_vertices = []
         path_codes = []
 
-        for contour in contours:
-            contour = contour[:, [1, 0]]  # Convert (row, col) → (x, y)
+        all_scatters = []
 
-            # Ensure the contour is closed
+        # convert contours to paths
+        for contour in contours:
+            contour = contour[:, [1, 0]] 
+
             if not np.array_equal(contour[0], contour[-1]):
                 contour = np.vstack([contour, contour[0]])
 
-            # Add to path
             n_points = len(contour)
             path_vertices.extend(contour)
             path_codes.extend([Path.MOVETO] + [Path.LINETO] * (n_points - 2) + [Path.CLOSEPOLY])
 
-            # Plot scatter points
-            scatter = self.axes.scatter(contour[:, 0], contour[:, 1], color='#00003f', s=1, zorder=2)
-            self.levelset_contour_plots.append(scatter)
-
-        # Plot the filled region
-        compound_path = Path(path_vertices, path_codes)
-        patch = PathPatch(compound_path, facecolor='#00FFFF', edgecolor='black', lw=3.0, alpha=0.1, zorder=1)
+        # plot curves
+        compound_path = Path(np.array(path_vertices), path_codes)
+        patch = PathPatch(compound_path, facecolor='#00FFFF', edgecolor='black', lw=1.0, alpha=0.1, zorder=1)
         self.axes.add_patch(patch)
         self.levelset_contour_plots.append(patch)
+
+        # plot points
+        all_points = np.vstack([c[:, [1, 0]] for c in contours])  
+        scatter = self.axes.scatter(all_points[:, 0], all_points[:, 1], color='#00003f', s=1, zorder=2)
+        self.levelset_contour_plots.append(scatter)
 
         self.canvas.draw()
 
@@ -201,7 +202,7 @@ class MPLWidget(QtWidgets.QWidget):
         # Plot with LineCollection
         lines = LineCollection(segments, colors=color, linewidths=linewidth, zorder=3)
         self.axes.add_collection(lines)
-        self.artists['voronoi diagram'] = lines
+        self.artists['voronoi_diagram'] = lines
         self.canvas.draw()
 
 
@@ -232,16 +233,123 @@ class MPLWidget(QtWidgets.QWidget):
         self.canvas.draw()
 
 
+    def plot_medial_axis_object_angles(self, graph, colormap='jet', linewidth=1.0, vmin=None, vmax=None):
+        """
+        Plots the medial axis with color mapped to the 'object angle' attribute on each edge.
+        """
+
+        if graph is None or graph.number_of_edges() == 0:
+            return
+
+        self.hide_medial_axis_object_angles()
+
+        # Get node positions and object angles
+        node_ids = sorted(graph.nodes)
+        id_to_index = {node: i for i, node in enumerate(node_ids)}
+        positions = np.array([graph.nodes[n]['position'] for n in node_ids])
+
+        edge_list = list(graph.edges)
+        edge_array = np.array([[id_to_index[u], id_to_index[v]] for u, v in edge_list])
+        segments = positions[edge_array][:, :, ::-1]  # (E, 2, 2) in (x, y)
+
+        # Extract object angles
+        angles = np.array([graph.edges[u, v].get('object angle', 0.0) for u, v in edge_list])
+
+        # Normalize colors
+        norm = Normalize(vmin=vmin if vmin is not None else angles.min(),
+                         vmax=vmax if vmax is not None else angles.max())
+        cmap = plt.colormaps.get_cmap(colormap)
+        colors = cmap(norm(angles))
+
+        # Create colored LineCollection
+        lines = LineCollection(segments, colors=colors, linewidths=linewidth, zorder=3)
+        self.axes.add_collection(lines)
+        self.artists['medial_axis_object_angles'] = lines
+        self.canvas.draw()
+
+
+
+    def plot_medial_axis_junctions(self, graph, junctions):
+        """
+        Plot T-junctions and Y-junctions on the Matplotlib canvas.
+        
+        junctions : dict
+            The dictionary of junctions returned by the mark_collapsible_edges function.
+        graph : networkx.Graph
+            The input graph with node positions and edges.
+        """
+        # Clear previous junction plots
+        self.hide_medial_axis_junctions()
+
+        # Ensure the 'junctions' key exists
+        self.artists['junctions'] = []
+
+        # Loop over the junctions
+        for junc_id, data in junctions.items():
+            node = data['node']
+            junction_type = data['type']
+            branches = data['branches']
+
+            # Get node position
+            position = np.array(graph.nodes[node]['position'])
+            position = position[::-1]
+
+            # Define the edge colors based on junction type
+            if junction_type == 'T-junction':
+                edge_color = 'red'
+            elif junction_type == 'Y-junction':
+                edge_color = 'blue'
+            elif junction_type == 'X-junction':
+                edge_color = 'green'
+            else:
+                edge_color = 'gray'  # Default for non-T, non-Y junctions
+
+            # For each branch, plot the edges
+            for branch in branches:
+                # Create segments from branch
+                positions = [np.array(graph.nodes[branch[i]]['position']) for i in range(len(branch))]
+                positions = [pos[::-1] for pos in positions]
+                segments = [np.vstack([positions[i], positions[i + 1]]) for i in range(len(positions) - 1)]
+                
+                # Create line collection for these segments
+                line_collection = LineCollection(segments, colors=edge_color, linewidths=2, zorder=2)
+                self.axes.add_collection(line_collection)
+                self.artists['junctions'].append(line_collection)
+
+        self.canvas.draw()
+
+
+
+
     def hide_medial_axis(self):
         if 'medial_axis' in self.artists:
             self.artists['medial_axis'].remove()
             del self.artists['medial_axis']
             self.canvas.draw()
 
+    def hide_medial_axis_object_angles(self):
+        if 'medial_axis_object_angles' in self.artists:
+            self.artists['medial_axis_object_angles'].remove()
+            del self.artists['medial_axis_object_angles']
+            self.canvas.draw()
+
     def hide_voronoi_diagram(self):
         if 'voronoi_diagram' in self.artists:
             self.artists['voronoi_diagram'].remove()
             del self.artists['voronoi_diagram']
+            self.canvas.draw()
+
+    def hide_medial_axis_junctions(self):
+        """
+        Clear all previously plotted junctions (T-junctions and Y-junctions).
+        """
+        if 'junctions' in self.artists:
+            for artist in self.artists['junctions']:
+                try:
+                    artist.remove()
+                except (AttributeError, ValueError):
+                    pass
+            del self.artists['junctions']
             self.canvas.draw()
 
 

@@ -198,29 +198,85 @@ def fast_medial_axis(contours, field: np.ndarray, isovalue: float):
 
     return G
 
-def prune_by_object_angle(graph: nx.Graph, boundary_points: np.ndarray, angle_threshold: float):
-    positions = nx.get_node_attributes(graph, 'position')
-    if not positions:
-        return graph
+def compute_object_angles(graph: nx.Graph, boundary_points: np.ndarray, k: int = 2) -> None:
+    """
+    Computes the object angle for each edge in the medial axis graph and stores
+    it as an edge attribute 'object angle'.
 
-    node_pos = {n: np.array(p) for n, p in positions.items()}
+    Parameters
+    ----------
+    graph : networkx.Graph
+        The medial axis graph with node positions stored under the 'position' attribute.
+    boundary_points : np.ndarray
+        Array of shape (N, 2) containing (row, col) coordinates of the boundary points.
+    k : int
+        Number of nearest neighbors to use (typically 2).
+    """
+    positions = {n: np.array(p, dtype=float) for n, p in nx.get_node_attributes(graph, 'position').items()}
+    if not positions or graph.number_of_edges() == 0:
+        return
+
+    node_ids = sorted(positions)
+    pos_array = np.array([positions[n] for n in node_ids])
+    node_index = {n: i for i, n in enumerate(node_ids)}
+
+    # Build KDTree from boundary points
     kdtree = KDTree(boundary_points)
+
+    # Collect all edges and compute their midpoints
+    edge_list = [(u, v) for u, v in graph.edges]
+    midpoints = np.array([
+        (positions[u] + positions[v]) / 2.0 for u, v in edge_list
+    ])
+
+    # Find two closest boundary points to each midpoint
+    dists, idxs = kdtree.query(midpoints, k=k)
+    a = boundary_points[idxs[:, 0]]
+    b = boundary_points[idxs[:, 1]]
+
+    # Compute vectors to nearest boundary points
+    v1 = a - midpoints
+    v2 = b - midpoints
+
+    # Compute dot product and norms
+    dot = np.sum(v1 * v2, axis=1)
+    norm_prod = np.linalg.norm(v1, axis=1) * np.linalg.norm(v2, axis=1)
+    cos_theta = np.clip(dot / norm_prod, -1.0, 1.0)
+
+    # Compute object angle
+    angles = np.arccos(cos_theta) / 2.0
+
+    # Assign object angles as edge attributes
+    attr_dict = {
+        tuple(sorted((u, v))): float(angle) for (u, v), angle in zip(edge_list, angles)
+    }
+    nx.set_edge_attributes(graph, attr_dict, name='object angle')
+
+
+def prune_by_object_angle(graph: nx.Graph, angle_threshold: float) -> nx.Graph:
+    """
+    Prunes leaf paths in the medial axis graph based on the precomputed
+    'object angle' edge attribute. Stops pruning when the angle exceeds threshold.
+
+    Parameters
+    ----------
+    graph : nx.Graph
+        Medial axis graph with 'object angle' on each edge.
+    angle_threshold : float
+        Angle threshold in radians.
+
+    Returns
+    -------
+    nx.Graph
+        A pruned copy of the input graph.
+    """
     G = graph.copy()
-
-    def object_angle(u, v):
-        midpoint = (node_pos[u] + node_pos[v]) / 2.0
-        dists, idxs = kdtree.query(midpoint, k=2)
-        a, b = boundary_points[idxs[0]], boundary_points[idxs[1]]
-        v1, v2 = a - midpoint, b - midpoint
-        cos_theta = np.clip(np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2)), -1.0, 1.0)
-        return np.arccos(cos_theta) / 2.0
-
-    leaves = [n for n in G.nodes if G.degree[n] == 1]
     removed = set()
+    leaves = [n for n in G.nodes if G.degree[n] == 1]
 
     while leaves:
         current = leaves.pop(0)
-        if current in removed:
+        if current in removed or current not in G:
             continue
 
         neighbors = list(G.neighbors(current))
@@ -228,7 +284,9 @@ def prune_by_object_angle(graph: nx.Graph, boundary_points: np.ndarray, angle_th
             continue
 
         neighbor = neighbors[0]
-        angle = object_angle(current, neighbor)
+        edge_key = tuple(sorted((current, neighbor)))
+
+        angle = G.edges[current, neighbor].get('object angle', 0)
 
         if angle < angle_threshold:
             G.remove_node(current)
@@ -238,4 +296,268 @@ def prune_by_object_angle(graph: nx.Graph, boundary_points: np.ndarray, angle_th
                 leaves.append(neighbor)
 
     return G
+
+
+
+######################################
+###  JUNCTION LABELLING UTILITIES  ### 
+######################################
+
+def ordered_edge(u, v):
+    return (min(u, v), max(u, v))
+
+
+def compute_branch_tangents(branches, graph):
+    """
+    Takes in a list of branches (list of nodes on a graph) and 
+    computes the tangent direction for each branch.
+    """
+    tangents = []
+    # compute a tangent for each branch
+    for i, branch in enumerate(branches):
+        # if branch has at least two edges, average tangents of last two edges
+        if len(branch) >= 3:
+            p1 = np.array(graph.nodes[branch[-1]]['position'])
+            p2 = np.array(graph.nodes[branch[-3]]['position'])
+        # if branch has only one edge, just use that edge as the tangent 
+        elif len(branch) >= 2:
+            logger.warning(f"[JUNCTION DETECTION] Branch {i} has fewer than 3 nodes. Using last 2 for tangent.")
+            p1 = np.array(graph.nodes[branch[-1]]['position'])
+            p2 = np.array(graph.nodes[branch[-2]]['position'])
+        # this should probably throw an exception, but skipping for now
+        else:
+            logger.warning(f"[JUNCTION DETECTION] Branch {i} is too short to compute a tangent. Skipping.")
+            continue
+
+        # append a normalized tangent for each branch
+        tangent = p2 - p1
+        norm = np.linalg.norm(tangent)
+        # check to see if something has gone horribly wrong
+        if norm == 0:
+            logger.warning(f"[JUNCTION DETECTION] Branch {i} has zero-length direction vector. Skipping.")
+            continue
+
+        # normalize the tangent
+        tangent /= norm
+        # append tangent AND origin to tangents list 
+        tangents.append((p1, tangent))
+    return tangents
+
+def compute_colinear_map(tangents, dot_threshold=np.sqrt(3)/ 2.0):
+    """
+    Takes in a list of tangents and returns a hash map that tells us what other 
+    tangents are roughly colinear. 
+
+    dot product 0.9848 means the angle is within 10 degrees
+    """
+    # initially no tangents are colinear 
+    colinear_map = {i: set() for i in range(len(tangents))}
+    for i in range(len(tangents)):
+        # compare tangent i to all subsequent tangents
+        _, t1 = tangents[i]
+        for j in range(i + 1, len(tangents)):
+            _, t2 = tangents[j]
+            if abs(np.dot(t1, t2)) > dot_threshold:
+                colinear_map[i].add(j)
+                colinear_map[j].add(i)
+    return colinear_map
+
+
+def classify_junction(colinear_map):
+    """
+    Determines whether a junction is a Y or a T junction by 
+    looking at the number of colinear pairs there are.
+    A T-junction will have exactly one colinear pair
+    """
+    # count unique colinear pairs (each appears twice in the map)
+    unique_colinear_pairs = sum(len(partners) for partners in colinear_map.values()) // 2
+    return 'T-junction' if unique_colinear_pairs == 1 else 'Y-junction'
+
+def classify_junction_by_angle(junction_node, branches, graph):
+    """
+    Classify junction as Y- or T-junction based on angles between endpoint vectors.
+
+    Parameters
+    ----------
+    junction_node : int
+        Node ID of the junction point.
+    branches : List[List[int]]
+        List of 3 branches (each a list of node IDs from junction to endpoint).
+    graph : networkx.Graph
+        Graph with node positions.
+
+    Returns
+    -------
+    str
+        'Y-junction' or 'T-junction'
+    """
+    if len(branches) != 3:
+        return None
+
+    J = np.array(graph.nodes[junction_node]['position'])
+
+    vectors = []
+    for branch in branches:
+        if len(branch) < 2:
+            return None  # malformed branch
+        end_node = branch[-1]
+        P = np.array(graph.nodes[end_node]['position'])
+        v = P - J
+        if np.linalg.norm(v) == 0:
+            return None  # skip degenerate case
+        vectors.append(v / np.linalg.norm(v))
+
+    # Compute dot products between all pairs
+    dot_products = [np.dot(vectors[i], vectors[j]) for i in range(3) for j in range(i+1, 3)]
+
+    if any(dot > 0 for dot in dot_products):
+        return 'Y-junction'
+    else:
+        return 'T-junction'
+
+
+def extended_line(p, d, extension=10.0):
+    d = d / np.linalg.norm(d)
+    return LineString([p - d * extension, p + d * extension])
+
+
+def identify_junctions(graph, object_angle_threshold):
+    nx.set_edge_attributes(graph, False, 'collapsible')
+    nx.set_edge_attributes(graph, 'None', 'junction_type')
+
+    junctions = {}
+    junction_id = 0
+    used_edges = set()
+
+    # this needs to go here because we need to keep track of
+    # used edges
+    def trace_branch(u, v):
+        """
+        Helper function to mark branches until we hit a edge with
+        high enough object angle or a junction node
+        """
+        branch = [u, v]
+        prev, current = u, v
+        while graph.degree(current) < 3:
+            nbrs = [n for n in graph.neighbors(current) if n != prev]
+            if len(nbrs) != 1:
+                break
+            nxt = nbrs[0]
+            edge = ordered_edge(current, nxt)
+            if edge in used_edges:
+                break
+            angle = graph[current][nxt].get('object angle', 0)
+            if angle > object_angle_threshold:
+                break
+            branch.append(nxt)
+            prev, current = current, nxt
+        return branch
+
+    # MARKING CODE 
+
+    for node in graph.nodes:
+        # im only going to look at T and Y junction for now
+        if graph.degree(node) !=  3:
+            continue
+
+        # trace a branch for each outgoing edge
+        branches = [trace_branch(node, nbr) for nbr in graph.neighbors(node)]
+        # compute tangnets for each branch
+        tangents = compute_branch_tangents(branches, graph)
+        # identify which tangents are colinear
+        colinear_map = compute_colinear_map(tangents)
+        # classify junctions based on how many branches are colinear
+        jtype = classify_junction(colinear_map)
+
+        # mark the edges for visualization 
+        for branch in branches:
+            for u, v in zip(branch, branch[1:]):
+                graph[u][v]['collapsible'] = True
+                graph[u][v]['junction_type'] = jtype
+                used_edges.add(ordered_edge(u, v))
+
+        # keep track of the traits for each junction
+        junctions[junction_id] = {
+            'node': node,
+            'branches': branches,
+            'type': jtype,
+            'colinear_map': colinear_map,
+            'tangents': tangents
+        }
+        junction_id += 1
+
+    return junctions
+
+
+def collapse_t_junction(graph, junc_data):
+    """
+    Procedure for collapsing T-junction
+    """
+    node = junc_data['node']
+    branches = junc_data['branches']
+    colinear_map = junc_data['colinear_map']
+    tangents = junc_data['tangents']
+
+    colinear_pairs = [(i, j) for i in range(3) for j in colinear_map[i] if j > i]
+    if not colinear_pairs:
+        return
+
+    i_col, j_col = colinear_pairs[0]
+    k_noncol = ({0, 1, 2} - {i_col, j_col}).pop()
+
+    p_i = np.array(graph.nodes[branches[i_col][-1]]['position'])
+    p_j = np.array(graph.nodes[branches[j_col][-1]]['position'])
+    p_k, d_k = tangents[k_noncol]
+
+    line_colinear = extended_line((p_i + p_j) / 2.0, p_j - p_i)
+    line_noncol = extended_line(p_k, d_k)
+    inter = line_colinear.intersection(line_noncol)
+
+    if inter.is_empty or inter.geom_type != 'Point':
+        return
+
+    intersection_point = np.array(inter.coords[0])
+    move_branch_nodes_toward_point(branches, intersection_point, graph, node)
+
+
+def collapse_y_junction(graph, junc_data):
+    """
+    Procedure for collapsing Y-junctions
+    """
+    node = junc_data['node']
+    branches = junc_data['branches']
+    tangents = junc_data['tangents']
+    colinear_map = junc_data['colinear_map']
+
+    lines = [extended_line(p, d) for p, d in tangents]
+    intersections = []
+
+    for i in range(3):
+        for j in range(i + 1, 3):
+            if j in colinear_map[i]:
+                continue
+            inter = lines[i].intersection(lines[j])
+            if not inter.is_empty and inter.geom_type == 'Point':
+                intersections.append(np.array(inter.coords[0]))
+
+    if not intersections:
+        return
+
+    intersection_point = np.mean(intersections, axis=0)
+    move_branch_nodes_toward_point(branches, intersection_point, graph, node)
+
+
+def collapse_to_tangent_intersection(graph, junctions):
+    for junc_id, data in junctions.items():
+        if data['type'] == 'T-junction':
+            collapse_t_junction(data, graph)
+        elif data['type'] == 'Y-junction':
+            collapse_y_junction(data, graph)
+
+
+def repair_junctions(graph, object_angle_thresh):
+    junctions = identify_junctions(graph, object_angle_thresh)
+    return junctions
+    #collapse_to_tangent_intersection(graph, junctions)
+
 

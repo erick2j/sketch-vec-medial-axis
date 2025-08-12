@@ -21,9 +21,12 @@ logger = logging.getLogger(__name__)
 #     pyside2-uic viewer.ui -o ui_viewer.py
 #################################################################
 
+MIN_STROKE_WIDTH = 1 
 MAX_STROKE_WIDTH = 20 
 MIN_ISO_VALUE = 0 
 MAX_ISO_VALUE = 100 
+MIN_OBJECT_ANGLE = 0 
+MAX_OBJECT_ANGLE = np.pi/2.0
 
 class MainWindow(QMainWindow):
     def __init__(self, parent=None):
@@ -35,9 +38,12 @@ class MainWindow(QMainWindow):
         self.base_image = None
         self.image_measure = None
         self.distance_function = None
-        self.isovalue = 0.0
         self.stroke_width = 1 
+        self.isovalue = 0.0
+        self.object_angle = 0.0
         self.boundary_contours = None
+        self.medial_axis = None
+        self.pruned_medial_axis = None
 
         
 
@@ -45,24 +51,29 @@ class MainWindow(QMainWindow):
         '''
         Connects all UI elements to their respective functions.
         '''
-        # image IO
+        # image loading buttons 
         self.ui.load_image_pushbutton.clicked.connect(self.load_image_from_file)
         self.ui.original_image_radiobutton.toggled.connect(self.toggle_original_image)
         self.ui.distance_radiobutton.toggled.connect(self.toggle_distance_function)
         self.ui.clean_canvas_radiobutton.toggled.connect(self.toggle_clean_canvas)
 
-
-
+        # sliders
         self.ui.stroke_width_slider.sliderMoved.connect(self.update_on_move_stroke_width)
         self.ui.stroke_width_slider.sliderReleased.connect(self.update_on_release_stroke_width)
-
 
         self.ui.isovalue_slider.sliderMoved.connect(self.update_on_move_iso_value)
         self.ui.isovalue_slider.sliderReleased.connect(self.update_on_release_iso_value)
 
+        self.ui.object_angle_slider.sliderMoved.connect(self.update_on_move_object_angle)
+        self.ui.object_angle_slider.sliderReleased.connect(self.update_on_release_object_angle)
+
+
+        # checkboxes
         self.ui.level_set_contour_checkbox.stateChanged.connect(self.toggle_boundary)
-        self.ui.stroke_graph_checkbox.stateChanged.connect(self.toggle_medial_axis)
         self.ui.voronoi_diagram_checkbox.stateChanged.connect(self.toggle_voronoi_diagram)
+        self.ui.stroke_graph_checkbox.stateChanged.connect(self.toggle_medial_axis)
+        self.ui.object_angle_checkbox.stateChanged.connect(self.toggle_medial_axis_object_angles)
+        self.ui.junctions_checkbox.stateChanged.connect(self.toggle_medial_axis_junctions)
 
 
         self.ui.upsampling_combobox.currentIndexChanged.connect(self.compute_image_measure)
@@ -136,12 +147,13 @@ class MainWindow(QMainWindow):
         self.isovalue = self.get_distance_iso_value()
         self.ui.isovalue_display.display(self.isovalue)
 
-    def update_on_move_persistence_threshold(self):
+    def update_on_move_object_angle(self):
         '''
-        Updates ON MOVE the persistence threshold slider + display
+        Updates ON MOVE the isovalue slider + display
         '''
-        pass
-        
+        self.object_angle = self.get_object_angle()
+        self.ui.object_angle_display.display(self.object_angle)
+
     def update_on_release_stroke_width(self):
         '''
         Performs relevant computation ON RELEASE of isovalue slider
@@ -159,21 +171,30 @@ class MainWindow(QMainWindow):
         '''
         Performs relevant computation ON RELEASE of isovalue slider
         '''
-        if self.distance_function is not None:
-            self.boundary_contours = find_contours(self.distance_function, self.isovalue, fully_connected='high')
-            self.boundary_contours = resample_contours(self.boundary_contours, 0.5, 1e-5)
-            self.toggle_boundary()
-            self.voronoi_diagram = fast_voronoi_diagram(unique_contour_points(self.boundary_contours))
-            self.medial_axis = fast_medial_axis(self.boundary_contours, self.distance_function, self.isovalue)
-            self.pruned_medial_axis = prune_by_object_angle(self.medial_axis, unique_contour_points(self.boundary_contours), np.pi/2.1)
-        
-    def update_on_release_persistence_threshold(self):
+        if self.distance_function is None:
+            return 
+
+        self.boundary_contours = find_contours(self.distance_function, self.isovalue, fully_connected='high')
+        self.boundary_contours = resample_contours(self.boundary_contours, 0.5, 1e-5)
+        self.toggle_boundary()
+        self.voronoi_diagram = fast_voronoi_diagram(unique_contour_points(self.boundary_contours))
+        self.medial_axis = fast_medial_axis(self.boundary_contours, self.distance_function, self.isovalue)
+        compute_object_angles(self.medial_axis, unique_contour_points(self.boundary_contours)) 
+        self.pruned_medial_axis = prune_by_object_angle(self.medial_axis, self.object_angle)
+        self.junctions = repair_junctions(self.pruned_medial_axis, np.pi/2.1)
+        self.toggle_medial_axis_object_angles()
+
+    def update_on_release_object_angle(self):
         '''
         Performs relevant computation ON RELEASE of isovalue slider
         '''
-        pass
+        if self.medial_axis is None:
+            return
 
-
+        self.pruned_medial_axis = prune_by_object_angle(self.medial_axis, self.object_angle)
+        self.junctions = repair_junctions(self.pruned_medial_axis, np.pi/2.1)
+        self.toggle_medial_axis_object_angles()
+        
     def compute_image_measure(self):
         """
         Recompute self.image_measure from self.base_image based on:
@@ -244,29 +265,33 @@ class MainWindow(QMainWindow):
             self.ui.mpl_widget.plot_medial_axis(self.pruned_medial_axis)
         else:
             self.ui.mpl_widget.hide_medial_axis()
-        
 
-    def toggle_image_measure_option(self):
-        pass
+    def toggle_medial_axis_object_angles(self):
+        if self.ui.object_angle_checkbox.isChecked() and self.pruned_medial_axis is not None:
+            self.ui.mpl_widget.plot_medial_axis_object_angles(self.pruned_medial_axis)
+        else:
+            self.ui.mpl_widget.hide_medial_axis_object_angles()
 
-    def toggle_boundary_measure_option(self):
-        pass
-
-    def toggle_complement_measure_option(self):
-        pass
+    def toggle_medial_axis_junctions(self):
+        if self.ui.junctions_checkbox.isChecked() and self.pruned_medial_axis is not None:
+            self.ui.mpl_widget.plot_medial_axis_junctions(self.pruned_medial_axis, self.junctions)
+        else:
+            self.ui.mpl_widget.hide_medial_axis_junctions()
 
 
     ### Getters for sliders
     def get_stroke_width(self):
-        step = MAX_STROKE_WIDTH / self.ui.stroke_width_slider.maximum()
-        return self.ui.stroke_width_slider.value() * step
+        step = (MAX_STROKE_WIDTH - MIN_STROKE_WIDTH) / self.ui.stroke_width_slider.maximum()
+        return float(MIN_STROKE_WIDTH + self.ui.stroke_width_slider.value() * step)
         
     def get_distance_iso_value(self):
         step = (MAX_ISO_VALUE - MIN_ISO_VALUE) / self.ui.isovalue_slider.maximum() 
         return float(MIN_ISO_VALUE + self.ui.isovalue_slider.value() * step)
         
-    def get_persistence_threshold(self):
-        pass
+    def get_object_angle(self):
+        step = (MAX_OBJECT_ANGLE - MIN_OBJECT_ANGLE) / self.ui.object_angle_slider.maximum() 
+        return float(MIN_OBJECT_ANGLE + self.ui.object_angle_slider.value() * step)
+
         
     
 if __name__ == "__main__":

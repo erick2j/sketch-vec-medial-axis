@@ -456,12 +456,12 @@ class Ui_MainWindow(object):
 
         self.verticalLayout_5.addWidget(self.object_angle_checkbox)
 
-        self.circumradius_checkbox = QCheckBox(self.scrollAreaWidgetContents)
-        self.circumradius_checkbox.setObjectName(u"circumradius_checkbox")
-        sizePolicy13.setHeightForWidth(self.circumradius_checkbox.sizePolicy().hasHeightForWidth())
-        self.circumradius_checkbox.setSizePolicy(sizePolicy13)
+        self.junctions_checkbox = QCheckBox(self.scrollAreaWidgetContents)
+        self.junctions_checkbox.setObjectName(u"junctions_checkbox")
+        sizePolicy13.setHeightForWidth(self.junctions_checkbox.sizePolicy().hasHeightForWidth())
+        self.junctions_checkbox.setSizePolicy(sizePolicy13)
 
-        self.verticalLayout_5.addWidget(self.circumradius_checkbox)
+        self.verticalLayout_5.addWidget(self.junctions_checkbox)
 
         self.stroke_graph_checkbox = QCheckBox(self.scrollAreaWidgetContents)
         self.stroke_graph_checkbox.setObjectName(u"stroke_graph_checkbox")
@@ -519,7 +519,7 @@ class Ui_MainWindow(object):
 
         self.retranslateUi(MainWindow)
 
-        self.ImageTabWidget.setCurrentIndex(1)
+        self.ImageTabWidget.setCurrentIndex(0)
         self.OverlaysTabWidget.setCurrentIndex(0)
 
 
@@ -557,7 +557,7 @@ class Ui_MainWindow(object):
         self.voronoi_diagram_checkbox.setText(QCoreApplication.translate("MainWindow", u"Voronoi Diagram", None))
         self.level_set_contour_checkbox.setText(QCoreApplication.translate("MainWindow", u"Boundary Contour", None))
         self.object_angle_checkbox.setText(QCoreApplication.translate("MainWindow", u"Object Angle Measure", None))
-        self.circumradius_checkbox.setText(QCoreApplication.translate("MainWindow", u"Circumradius Measure", None))
+        self.junctions_checkbox.setText(QCoreApplication.translate("MainWindow", u"Potential Junctions", None))
         self.stroke_graph_checkbox.setText(QCoreApplication.translate("MainWindow", u"Stroke Graph", None))
         self.OverlaysTabWidget.setTabText(self.OverlaysTabWidget.indexOf(self.OverlaysTab), QCoreApplication.translate("MainWindow", u"Overlays", None))
         self.OverlaysTabWidget.setTabText(self.OverlaysTabWidget.indexOf(self.ExperimentalOverlayTab), QCoreApplication.translate("MainWindow", u"Experimental", None))

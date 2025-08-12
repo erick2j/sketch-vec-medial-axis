@@ -488,7 +488,7 @@
              <enum>QTabWidget::Rounded</enum>
             </property>
             <property name="currentIndex">
-             <number>1</number>
+             <number>0</number>
             </property>
             <property name="elideMode">
              <enum>Qt::ElideLeft</enum>
@@ -759,7 +759,7 @@
                    </widget>
                   </item>
                   <item>
-                   <widget class="QCheckBox" name="circumradius_checkbox">
+                   <widget class="QCheckBox" name="junctions_checkbox">
                     <property name="sizePolicy">
                      <sizepolicy hsizetype="Minimum" vsizetype="MinimumExpanding">
                       <horstretch>0</horstretch>
@@ -767,7 +767,7 @@
                      </sizepolicy>
                     </property>
                     <property name="text">
-                     <string>Circumradius Measure</string>
+                     <string>Potential Junctions</string>
                     </property>
                    </widget>
                   </item>
