@@ -206,8 +206,9 @@ class MPLWidget(QtWidgets.QWidget):
         self.canvas.draw()
 
 
-    def plot_medial_axis(self, graph, color='red', linewidth=1.0):
+    def plot_medial_axis(self, graph, color='red', linewidth=1.0, vertex_color='black', vertex_size=1):
         """
+        Plots medial axis edges and vertices.
         """
         if graph is None or graph.number_of_edges() == 0:
             return
@@ -226,11 +227,19 @@ class MPLWidget(QtWidgets.QWidget):
         segments = positions[edge_array]  # shape (E, 2, 2)
         segments = segments[:, :, ::-1]   # convert to (x, y) for display
 
-        # Plot with LineCollection
+        # Plot edges
         lines = LineCollection(segments, colors=color, linewidths=linewidth, zorder=3)
         self.axes.add_collection(lines)
-        self.artists['medial_axis'] = lines
+
+        # Plot vertices
+        xs, ys = positions[:, 1], positions[:, 0]  # flip to (x, y)
+        vertex_plot = self.axes.scatter(xs, ys, c=vertex_color, s=vertex_size, zorder=4)
+
+        # Store references
+        self.artists['medial_axis_edges'] = lines
+        self.artists['medial_axis_vertices'] = vertex_plot 
         self.canvas.draw()
+
 
 
     def plot_medial_axis_object_angles(self, graph, colormap='jet', linewidth=1.0, vmin=None, vmax=None):
@@ -322,9 +331,11 @@ class MPLWidget(QtWidgets.QWidget):
 
 
     def hide_medial_axis(self):
-        if 'medial_axis' in self.artists:
-            self.artists['medial_axis'].remove()
-            del self.artists['medial_axis']
+        if 'medial_axis_edges' in self.artists:
+            self.artists['medial_axis_edges'].remove()
+            self.artists['medial_axis_vertices'].remove()
+            del self.artists['medial_axis_edges']
+            del self.artists['medial_axis_vertices']
             self.canvas.draw()
 
     def hide_medial_axis_object_angles(self):

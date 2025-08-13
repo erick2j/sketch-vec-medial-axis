@@ -154,6 +154,13 @@ class MainWindow(QMainWindow):
         self.object_angle = self.get_object_angle()
         self.ui.object_angle_display.display(self.object_angle)
 
+    def update_on_move_junction_object_angle(self):
+        '''
+        Updates ON MOVE the isovalue slider + display
+        '''
+        self.junction_object_angle = self.get_junction_object_angle()
+        self.ui.junction_object_angle_display.display(self.junction_object_angle)
+
     def update_on_release_stroke_width(self):
         '''
         Performs relevant computation ON RELEASE of isovalue slider
@@ -181,7 +188,7 @@ class MainWindow(QMainWindow):
         self.medial_axis = fast_medial_axis(self.boundary_contours, self.distance_function, self.isovalue)
         compute_object_angles(self.medial_axis, unique_contour_points(self.boundary_contours)) 
         self.pruned_medial_axis = prune_by_object_angle(self.medial_axis, self.object_angle)
-        self.junctions = repair_junctions(self.pruned_medial_axis, np.pi/2.1)
+        self.junctions = repair_junctions(self.pruned_medial_axis, self.object_angle)
         self.toggle_medial_axis_object_angles()
 
     def update_on_release_object_angle(self):
@@ -192,7 +199,7 @@ class MainWindow(QMainWindow):
             return
 
         self.pruned_medial_axis = prune_by_object_angle(self.medial_axis, self.object_angle)
-        self.junctions = repair_junctions(self.pruned_medial_axis, np.pi/2.1)
+        self.junctions = repair_junctions(self.pruned_medial_axis, self.object_angle)
         self.toggle_medial_axis_object_angles()
         
     def compute_image_measure(self):
@@ -291,6 +298,10 @@ class MainWindow(QMainWindow):
     def get_object_angle(self):
         step = (MAX_OBJECT_ANGLE - MIN_OBJECT_ANGLE) / self.ui.object_angle_slider.maximum() 
         return float(MIN_OBJECT_ANGLE + self.ui.object_angle_slider.value() * step)
+
+    def get_junction_object_angle(self):
+        step = (MAX_OBJECT_ANGLE - MIN_OBJECT_ANGLE) / self.ui.junction_slider.maximum() 
+        return float(MIN_OBJECT_ANGLE + self.ui.junction_slider.value() * step)
 
         
     
