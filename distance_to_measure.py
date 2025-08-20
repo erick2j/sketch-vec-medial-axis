@@ -204,6 +204,7 @@ def distance_to_measure_roi_sparse_cpu_numba(measure, stroke_radius=1, dr=0.05):
     Numba-accelerated distance-to-measure function using sparse ROI and local convolutions.
     Avoids global convolution; operates only at relevant ROI pixels.
     """
+    start = time.perf_counter()
     h, w = measure.shape
     rmax = min(3 * stroke_radius, 50)
 
@@ -255,6 +256,14 @@ def distance_to_measure_roi_sparse_cpu_numba(measure, stroke_radius=1, dr=0.05):
     D[~satisfied] = np.max(D)
     D /= np.sqrt(m0)
     D = np.sqrt(D)
+
+
+    elapsed = (time.perf_counter() - start) * 1000
+    logger.info(f"[CPU-SPARSE] Distance computation completed in {elapsed:.2f} ms")
+    logger.debug(f"[CPU-SPARSE] Checked {len(radii)} radii from {rmin:.2f} to {rmax:.2f}")
+    logger.debug(f"[CPU-SPARSE] m0 = {m0:.6f}, max D = {cp.max(D).item():.4f}")
+
+
 
     '''
     plt.figure()

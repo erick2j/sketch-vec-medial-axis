@@ -193,7 +193,7 @@ class MainWindow(QMainWindow):
         self.medial_axis = fast_medial_axis(self.boundary_contours, self.distance_function, self.isovalue)
         compute_object_angles(self.medial_axis, unique_contour_points(self.boundary_contours)) 
         self.pruned_medial_axis = prune_by_object_angle(self.medial_axis, self.object_angle)
-        self.junctions = classify_junctions(self.pruned_medial_axis, self.object_angle, x_center_distance=self.stroke_width)
+        self.junctions = classify_junctions(self.pruned_medial_axis, self.object_angle, merge_radius=self.stroke_width)
         self.toggle_medial_axis_object_angles()
 
     def update_on_release_object_angle(self):
