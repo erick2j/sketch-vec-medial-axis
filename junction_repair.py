@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 import numpy as np
 import networkx as nx
@@ -16,37 +15,10 @@ JunctionMap = Dict[int, Junction]
 # =========================
 
 def ordered_edge(u: int, v: int) -> Tuple[int, int]:
+    """
+    Returns the canonical ordering of an edge from node id's pair (u,v).
+    """
     return (u, v) if u < v else (v, u)
-
-def is_junction(graph: nx.Graph, n: int) -> bool:
-    return graph.degree[n] >= 3
-
-def _center_pos(graph: nx.Graph, n: int) -> np.ndarray:
-    return np.asarray(graph.nodes[n]['position'], dtype=float)
-
-def _squared_distance(a: np.ndarray, b: np.ndarray) -> float:
-    d = a - b
-    return float(d @ d)
-
-def direction_from_branch_end(graph: nx.Graph, branch: Branch) -> np.ndarray | None:
-    """Unit direction from the last two nodes of a branch; None if degenerate."""
-    if len(branch) < 2:
-        return None
-    p0 = np.asarray(graph.nodes[branch[-2]]['position'])
-    p1 = np.asarray(graph.nodes[branch[-1]]['position'])
-    v  = p1 - p0
-    n  = np.linalg.norm(v)
-    return (v / n) if n > 0 else None
-
-def branch_end_directions(graph: nx.Graph, branches: BranchSet) -> List[np.ndarray] | None:
-    """Return [dir1, dir2, dir3] if all are valid; otherwise None."""
-    dirs: List[np.ndarray] = []
-    for br in branches:
-        d = direction_from_branch_end(graph, br)
-        if d is None:
-            return None
-        dirs.append(d)
-    return dirs  # length 3 by construction
 
 def compute_branch_tangents(graph, branches):
     """
@@ -62,12 +34,10 @@ def compute_branch_tangents(graph, branches):
             p2 = np.array(graph.nodes[branch[-3]]['position'])
         # if branch has only one edge, just use that edge as the tangent 
         elif len(branch) >= 2:
-            #logger.warning(f"[JUNCTION DETECTION] Branch {i} has fewer than 3 nodes. Using last 2 for tangent.")
             p1 = np.array(graph.nodes[branch[-1]]['position'])
             p2 = np.array(graph.nodes[branch[-2]]['position'])
         # this should probably throw an exception, but skipping for now
         else:
-            #logger.warning(f"[JUNCTION DETECTION] Branch {i} is too short to compute a tangent. Skipping.")
             continue
 
         # append a normalized tangent for each branch
@@ -75,7 +45,6 @@ def compute_branch_tangents(graph, branches):
         norm = np.linalg.norm(tangent)
         # check to see if something has gone horribly wrong
         if norm == 0:
-            #logger.warning(f"[JUNCTION DETECTION] Branch {i} has zero-length direction vector. Skipping.")
             continue
 
         # normalize the tangent
@@ -86,13 +55,15 @@ def compute_branch_tangents(graph, branches):
 
 
 def count_colinear_pairs(dirs: List[np.ndarray], thresh: float) -> int:
-    """Number of (i,j) pairs whose |dot| exceeds the threshold."""
+    """
+    Number of (i,j) pairs whose |dot| exceeds the threshold.
+    """
     assert len(dirs) == 3
     pairs = ((0, 1), (0, 2), (1, 2))
     return sum(1 for i, j in pairs if abs(np.dot(dirs[i], dirs[j])) > thresh)
 
 
-def compute_colinear_map(tangents, dot_threshold=0.90):
+def compute_colinear_map(tangents, dot_threshold=0.95):
     """
     Takes in a list of tangents and returns a hash map that tells us what other 
     tangents are roughly colinear. 
@@ -110,10 +81,6 @@ def compute_colinear_map(tangents, dot_threshold=0.90):
     return colinear_map
 
 
-def _unique_next_neighbor(graph: nx.Graph, prev: int, curr: int) -> int | None:
-    """Return the unique neighbor forward of (prev -> curr), or None if it doesn't exist."""
-    forward = [n for n in graph.neighbors(curr) if n != prev]
-    return forward[0] if len(forward) == 1 else None
 
 def _endpoint(graph: nx.Graph, branch: Branch) -> np.ndarray:
     """Position of the last node in a branch."""
@@ -132,15 +99,6 @@ def _pos(graph: nx.Graph, n: int) -> np.ndarray:
 def _set_pos(graph: nx.Graph, n: int, p: np.ndarray) -> None:
     """Set node position (accepts ndarray)."""
     graph.nodes[n]['position'] = np.asarray(p, dtype=float)
-
-
-def _unique_nodes_in_junction(rec: JunctionRec) -> Set[int]:
-    """All unique node IDs in center + all branches."""
-    s: Set[int] = {rec['node']}
-    for br in rec['branches']:
-        s.update(br)
-    return s
-
 
 def _centroid_of_nodes(graph: nx.Graph, nodes: Set[int]) -> np.ndarray:
     """Centroid of given node set."""
@@ -189,6 +147,7 @@ def extended_line(p: np.ndarray, d: np.ndarray, extension: float = 10.0) -> Line
 def initialize_junctions(graph: nx.Graph) -> Dict[int, BranchSet]:
     """
     For every degree-3 node, create 3 initial branches [node, neighbor].
+    This mean that a single edge could be part of two branches...
     """
     initial: Dict[int, BranchSet] = {}
     for node in graph:
@@ -203,18 +162,41 @@ def initialize_junctions(graph: nx.Graph) -> Dict[int, BranchSet]:
 # 2) Lockstep growth with object-angle stop
 # =========================
 
+
+def is_junction(graph: nx.Graph, node_id: int) -> bool:
+    """
+    Returns True if the node_id is a junction (degree >=3). False otherwise.
+    """
+    return graph.degree[node_id] >= 3
+
+
+def unique_next_neighbor(graph: nx.Graph, prev: int, curr: int) -> int | None:
+    """
+    Return the unique neighbor forward of (prev -> curr), or None if it doesn't exist.
+    """
+    forward = [n for n in graph.neighbors(curr) if n != prev]
+    return forward[0] if len(forward) == 1 else None
+
 def grow_branches_lockstep(
     graph: nx.Graph,
     seeds: Dict[int, BranchSet],
     angle_thresh: float
 ) -> Dict[int, BranchSet]:
     """
-    Grow branches in locksetp
+    Grow branches in lockstep so that one junction doesn't eat up the whole
+    branch between two close junctions.
+    
+    Branches will grow until:
+    - (1) hit a degree >=3 node
+    - (2) hit a dead end/ fork in the road 
+    - (3) hit an edge with high object angle (exceeds threshold)
+        - in this case, will still add the edge to get a good tangent estimate
+    - (4) meets an edge that has already been claimed by another branch
     """
     # to begin with, we will attemp to grow every branch
     growing = {n: [b[:] for b in brs] for n, brs in seeds.items()}
     # keep track of which __edges__ have already been taken
-    claimed_interior: Set[Tuple[int, int]] = set()
+    claimed_edges: Set[Tuple[int, int]] = set()
     # as long is this is true, we will continiue growing all remaining 'growing' branches
     changed = True
 
@@ -227,13 +209,13 @@ def grow_branches_lockstep(
                 # look at the outermost edge
                 prev, curr = br[-2], br[-1]
 
-                # stop growing current branch if last node is a junction 
+                # condition (1): stop growing current branch if last node is a junction 
                 if is_junction(graph, curr):
                     new_branches.append(br)
                     continue
 
                 # stop growing current branch if there is no unique next neighbor 
-                nxt = _unique_next_neighbor(graph, prev, curr)
+                nxt = unique_next_neighbor(graph, prev, curr)
                 if nxt is None:
                     new_branches.append(br)
                     continue
@@ -247,19 +229,19 @@ def grow_branches_lockstep(
                 if angle > angle_thresh:
                     br.append(nxt)
                     if interior_edge:
-                        claimed_interior.add(e)
+                        claimed_edges.add(e)
                     new_branches.append(br)
                     continue
 
                 # stop growing this branch if we have already hit this edge before 
-                if interior_edge and (e in claimed_interior):
+                if interior_edge and (e in claimed_edges):
                     new_branches.append(br)
                     continue
 
                 # if we have gotten here, we should grow the branch and mark the edge as claimed 
                 br.append(nxt)
                 if interior_edge:
-                    claimed_interior.add(e)
+                    claimed_edges.add(e)
                 new_branches.append(br)
                 changed = True
 
@@ -268,38 +250,112 @@ def grow_branches_lockstep(
     return growing
 
 
-# =========================
-# 3) T/Y classification
-# =========================
+# =====================================
+#  T- and Y- junction classification 
+# =====================================
 
-def _build_proximity_graph(
+def direction_from_branch_end(graph: nx.Graph, branch: Branch) -> np.ndarray | None:
+    """
+    Computes the branch direction for a single Branch as estimated by the 
+    last edge in the branch. The last edge in the branch is a ''good enough''
+    estimate of the stroke tangent.
+
+    Direction __is normalized__. Direction is pointing INTO the branch/junction.
+
+    Note: Returns None if there are no edges in the branch (i think this impossible unless
+    i haven't changed the code back)
+    """
+    if len(branch) < 2:
+        return None
+    p0 = np.asarray(graph.nodes[branch[-2]]['position'])
+    p1 = np.asarray(graph.nodes[branch[-1]]['position'])
+    v  = p0 - p1
+    n  = np.linalg.norm(v)
+    return (v / n) if n > 0 else None
+
+def branch_end_directions(graph: nx.Graph, branches: BranchSet) -> List[np.ndarray] | None:
+    """
+    Computes all of the directions for each branch in a BranchSet. 
+
+    Note: Returns None if even one of the directions is None (again, i don't
+    think this can happen)
+    """
+    directions: List[np.ndarray] = []
+    for branch in branches:
+        dir = direction_from_branch_end(graph, branch)
+        if dir is None:
+            return None
+        directions.append(dir)
+    return directions 
+
+
+def classify_grown_junctions(
+    graph: nx.Graph,
+    grown: Dict[int, BranchSet],
+    colinear_thresh: float = 0.95
+) -> JunctionMap:
+    """
+    Classify each degree-3 node as T or Y:
+        A junction is a T-junction if exactly 1 pair of branch directions
+        are parallel.
+        All other junctions are Y-junctions.
+    """
+    junctions: JunctionMap = {}
+    next_id = 0
+
+    for node, branches in grown.items():
+        dirs = branch_end_directions(graph, branches)
+        # prettry sure this is impossible
+        if dirs is None:
+            continue 
+
+        num_colinear = count_colinear_pairs(dirs, colinear_thresh)
+        jtype = 'T-junction' if num_colinear == 1 else 'Y-junction'
+
+        junctions[next_id] = {
+            'node': node,
+            'branches': branches,
+            'type': jtype
+        }
+        next_id += 1
+
+    return junctions
+
+# =====================================
+#  Junction merging to form X-junctions (or higher) 
+# =====================================
+
+def build_junction_graph(
     graph: nx.Graph,
     junctions: JunctionMap,
     radius: float
 ) -> Dict[int, Set[int]]:
     """
-    Build an adjacency map over junction IDs where an edge exists
-    if their centers are within 'radius'.
+    Make a graph for all the junctions where an edge between i ~ j if
+    junction i's central node is within a specified radius of junction j.
     """
     ids = list(junctions.keys())
-    centers = {jid: _center_pos(graph, junctions[jid]['node']) for jid in ids}
+    centers = {jid: np.asarray(graph.nodes[junctions[jid]['node']]['position'], dtype=float) for jid in ids}
     r2 = float(radius) ** 2
 
     adj: Dict[int, Set[int]] = {jid: set() for jid in ids}
-    # O(n^2) pairwise check; for many junctions you could swap to KDTree
+    # brute force for now 
     for i in range(len(ids)):
         ji = ids[i]
         ci = centers[ji]
         for j in range(i + 1, len(ids)):
             jj = ids[j]
             cj = centers[jj]
-            if _squared_distance(ci, cj) <= r2:
+            if np.dot(ci-cj, ci-cj) <= r2:
                 adj[ji].add(jj)
                 adj[jj].add(ji)
     return adj
 
-def _connected_components(adj: Dict[int, Set[int]]) -> List[Set[int]]:
-    """Connected components over an adjacency map."""
+def connected_junction_components(adj: Dict[int, Set[int]]) -> List[Set[int]]:
+    """
+    Connected components of the junction graph are unique junctions.
+    This function finds them.
+    """
     unseen = set(adj.keys())
     comps: List[Set[int]] = []
     while unseen:
@@ -316,41 +372,6 @@ def _connected_components(adj: Dict[int, Set[int]]) -> List[Set[int]]:
         comps.append(comp)
     return comps
 
-def classify_grown_junctions(
-    graph: nx.Graph,
-    grown: Dict[int, BranchSet],
-    colinear_thresh: float = 0.95
-) -> JunctionMap:
-    """
-    Classify each degree-3 node as T or Y via branch-end colinearity:
-      - compute unit directions from the last two nodes of each branch
-      - count colinear pairs via |dot| > colinear_thresh
-      - exactly one colinear pair => T; otherwise Y
-    """
-    junctions: JunctionMap = {}
-    next_id = 0
-
-    for node, branches in grown.items():
-        dirs = branch_end_directions(graph, branches)
-        if dirs is None:
-            continue  # skip degenerate branches
-
-        num_colinear = count_colinear_pairs(dirs, colinear_thresh)
-        jtype = 'T-junction' if num_colinear == 1 else 'Y-junction'
-
-        junctions[next_id] = {
-            'node': node,
-            'branches': branches,
-            'type': jtype
-        }
-        next_id += 1
-
-    return junctions
-
-#######################
-## JUNCTION MERGING
-#######################
-
 
 def merge_nearby_junctions(
     graph: nx.Graph,
@@ -364,8 +385,8 @@ def merge_nearby_junctions(
     if not junctions:
         return {}
 
-    adj   = _build_proximity_graph(graph, junctions, radius)
-    comps = _connected_components(adj)
+    adj   = build_junction_graph(graph, junctions, radius)
+    comps = connected_junction_components(adj)
 
     merged: JunctionMap = {}
     new_id = 0
@@ -403,29 +424,29 @@ def merge_nearby_junctions(
 
 ###############################
 
-def compute_center_x(graph: nx.Graph, rec: Junction) -> np.ndarray:
-    """X: centroid of all unique nodes in the junction."""
-    nodes = {rec['node']}
-    for br in rec['branches']:
+def compute_center_x(graph: nx.Graph, junc: Junction) -> np.ndarray:
+    """
+    For X-junctions, a first guess is to place the junction at the 
+    centroid of all nodes in the junction.
+
+    TODO:
+        come up with something better.
+    """
+    nodes = {junc['node']}
+    for br in junc['branches']:
         nodes.update(br)
-    pts = np.vstack([_center_pos(graph, n) for n in nodes])
+    pts = np.vstack([np.asarray(graph.nodes[n]['position'], dtype=float) for n in nodes])
     return pts.mean(axis=0)
 
 
-def compute_center_y(graph: nx.Graph, rec: Junction, colinear_dot: float = 0.95) -> np.ndarray:
+def compute_center_y(graph: nx.Graph, junc: Junction, colinear_dot: float = 0.95) -> np.ndarray:
     """
-    Y: average of intersections between non‑colinear tangent rays.
-    Falls back to average endpoints, then current center.
+    For Y-junctions, we place the junction node at the average of all intersection
+    points of branch rays. Skip pairs of branch rays that are close to colinear,
+    they will move the junction too much.
     """
-    branches = rec['branches']
-    # Prefer given tangents; otherwise compute from branches.
-    if rec.get('tangents') and len(rec['tangents']) == 3:
-        rays = rec['tangents']  # list of (point, dir)
-    else:
-        dirs = _branch_dirs(graph, branches)
-        if dirs is None:
-            return _avg_endpoints(graph, branches)
-        rays = [( _endpoint(graph, br), dirs[i] ) for i, br in enumerate(branches)]
+    branches = junc['branches']
+    rays = junc['tangents'] 
 
     # Collect intersections of non‑colinear pairs
     lines = [extended_line(p, d) for (p, d) in rays]
@@ -442,78 +463,64 @@ def compute_center_y(graph: nx.Graph, rec: Junction, colinear_dot: float = 0.95)
     if intersections:
         return np.vstack(intersections).mean(axis=0)
 
-    # Fallbacks
+    # fallback
+    print("Y-junction fail")
     return _avg_endpoints(graph, branches)
 
 
-def compute_center_t(graph: nx.Graph, rec: Junction, colinear_dot: float = 0.95) -> np.ndarray:
+def compute_center_t(graph: nx.Graph, junc: Junction, colinear_dot: float = 0.95) -> np.ndarray:
     """
     T: intersect (midpoint line of colinear endpoints) with the non‑colinear branch ray.
     Falls back to average endpoints on failure.
     """
-    branches = rec['branches']
+    branches = junc['branches']
+    rays = junc['tangents']
+    colinear_map = junc['colinear_map']
 
-    # Prefer given tangents; otherwise compute from branches.
-    if rec.get('tangents') and len(rec['tangents']) == 3:
-        rays = rec['tangents']
-    else:
-        dirs = _branch_dirs(graph, branches)
-        if dirs is None:
-            return _avg_endpoints(graph, branches)
-        rays = [( _endpoint(graph, br), dirs[i] ) for i, br in enumerate(branches)]
+    colinear_pairs = [(i, j) for i in range(3) for j in colinear_map[i] if j > i]
+    if not colinear_pairs:
+        return compute_center_y(graph, junc, colinear_dot)
 
-    # Find a single colinear pair
-    col_pair = None
-    for i in range(3):
-        for j in range(i + 1, 3):
-            if abs(np.dot(rays[i][1], rays[j][1])) > colinear_dot:
-                col_pair = (i, j)
-                break
-        if col_pair:
-            break
+    i_col, j_col = colinear_pairs[0]
+    k_noncol = ({0, 1, 2} - {i_col, j_col}).pop()
 
-    if col_pair is None:
-        # If nothing looks colinear, treat as Y fallback
-        return compute_center_y(graph, rec, colinear_dot)
+    p_i = np.array(graph.nodes[branches[i_col][-1]]['position'])
+    p_j = np.array(graph.nodes[branches[j_col][-1]]['position'])
+    p_k, d_k = rays[k_noncol]
 
-    i_col, j_col = col_pair
-    k = ({0, 1, 2} - {i_col, j_col}).pop()
+    line_colinear = extended_line((p_i + p_j) / 2.0, p_j - p_i)
+    line_noncol = extended_line(p_k, d_k)
+    inter = line_colinear.intersection(line_noncol)
 
-    p_i = _endpoint(graph, branches[i_col])
-    p_j = _endpoint(graph, branches[j_col])
-    mid = 0.5 * (p_i + p_j)
-    dir_col = p_j - p_i
-    L_col = extended_line(mid, dir_col)
+    # hopefully doesn't happen
+    if inter.is_empty or inter.geom_type != 'Point':
+        return (p_i + p_j) / 2.0
 
-    p_k, d_k = rays[k]
-    L_non = extended_line(p_k, d_k)
-
-    pt = _line_intersection_point(L_col, L_non)
-    return pt if pt is not None else _avg_endpoints(graph, branches)
+    intersection_point = np.array(inter.coords[0])
+    return intersection_point
 
 
-def compute_junction_center(graph: nx.Graph, rec: Junction) -> np.ndarray:
+def compute_junction_center(graph: nx.Graph, junc: Junction) -> np.ndarray:
     """Dispatch by type; always returns a valid center point."""
-    jtype = rec.get('type', '')
-    """
+    jtype = junc.get('type', '')
     if jtype == 'X-junction':
-        return compute_center_x(graph, rec)
+        return compute_center_x(graph, junc)
     elif jtype == 'Y-junction':
-        return compute_center_y(graph, rec)
+        return compute_center_y(graph, junc)
     elif jtype == 'T-junction':
-        return compute_center_t(graph, rec)
+        return compute_center_t(graph, junc)
     # unknown -> keep current center
-    """
-    return _center_pos(graph, rec['node'])
+    return np.asarray(graph.nodes[junc['node']]['position'], dtype=float)
 
 
-def _straighten_branch_toward_center(graph: nx.Graph, branch: Branch, center: np.ndarray) -> None:
+def straighten_branch_toward_center(graph: nx.Graph, branch: Branch, center: np.ndarray) -> None:
     """
     Place all internal nodes of `branch` evenly on the straight segment
     from its endpoint to `center`. Endpoint remains fixed.
     """
     if len(branch) <= 1:
         return
+
     end_pos = _endpoint(graph, branch)
     m = len(branch) - 1  # number of internal nodes + center index
     # Interpolate internal nodes from end_pos -> center (excluding the endpoint)
@@ -530,11 +537,14 @@ def straighten_junction_geometry(graph: nx.Graph, junctions: JunctionMap) -> Jun
       3) Straighten each branch along a straight segment (endpoint -> center).
     Returns the junction map for convenient chaining.
     """
-    for rec in junctions.values():
-        center = compute_junction_center(graph, rec)  # never None
-        for br in rec['branches']:
-            _straighten_branch_toward_center(graph, br, center)
-        _set_pos(graph, rec['node'], center)
+    for junc in junctions.values():
+        # skip x-junctions
+        if junc.get('type', '') == 'X-junction':
+            continue
+        center = compute_junction_center(graph, junc) 
+        for br in junc['branches']:
+            straighten_branch_toward_center(graph, br, center)
+        _set_pos(graph, junc['node'], center)
     return junctions
         
 

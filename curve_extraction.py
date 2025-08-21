@@ -195,8 +195,26 @@ def fast_medial_axis(contours, field: np.ndarray, isovalue: float):
     G = nx.Graph()
     G.add_edges_from((int(i), int(j)) for i, j in valid_edges)
     nx.set_node_attributes(G, pos_dict, 'position')
-
     return G
+
+def slow_medial_axis(contours): 
+    # Step 1: Flatten all unique boundary points 
+    all_points = np.vstack(contours) 
+    # Step 2: Compute Voronoi diagram using triangle
+    positions, edges, _, _ = tr.voronoi(all_points[:, [0,1]]) 
+    # Step 3: Clean/prune Voronoi edges based on polygon containment 
+    pos_dict = {i: pt for i, pt in enumerate(positions)} 
+    G = nx.Graph() 
+    G.add_edges_from(edges) 
+    nx.set_node_attributes(G, pos_dict, 'position') 
+    # Step 4: Build MultiPolygon from CCW/CW contours 
+    prepared_poly = build_bounding_polygon(contours) 
+    #prepared_poly = prep(poly) 
+    # Step 5: Keep only nodes inside polygon 
+    inside = [n for n, p in pos_dict.items() if prepared_poly.contains(Point(p))] 
+    medial_axis = G.subgraph(inside).copy() 
+    return medial_axis
+
 
 def compute_object_angles(graph: nx.Graph, boundary_points: np.ndarray, k: int = 2) -> None:
     """
