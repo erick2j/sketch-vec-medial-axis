@@ -411,7 +411,7 @@ def merge_nearby_junctions(
         colinear_map = compute_colinear_map(tangents)
 
         merged[new_id] = {
-            'node':     rep['node'],       # keep representative's node
+            'node':     rep['node'],       # keep representative node
             'branches': combined_branches,
             'type':     jtype,
             'colinear_map' : colinear_map,
@@ -546,6 +546,132 @@ def straighten_junction_geometry(graph: nx.Graph, junctions: JunctionMap) -> Jun
             straighten_branch_toward_center(graph, br, center)
         _set_pos(graph, junc['node'], center)
     return junctions
+
+
+# =========================
+# X-junction refinement
+# =========================
+
+def _euclid_len(graph: nx.Graph, u: int, v: int) -> float:
+    pu, pv = _pos(graph, u), _pos(graph, v)
+    return float(np.linalg.norm(pu - pv))
+
+def _pairwise_min_dist_nodes(graph: nx.Graph, nodes: list[int]) -> tuple[int, int, float]:
+    """Return (i_node, j_node, distance) with minimal Euclidean distance."""
+    best = (None, None, float('inf'))
+    for i in range(len(nodes)):
+        for j in range(i + 1, len(nodes)):
+            d = _euclid_len(graph, nodes[i], nodes[j])
+            if d < best[2]:
+                best = (nodes[i], nodes[j], d)
+    return best  # type: ignore
+
+def _branch_edge_set(br: Branch) -> set[tuple[int, int]]:
+    return {ordered_edge(br[k], br[k + 1]) for k in range(len(br) - 1)}
+
+def _leaf_nodes_of_junction(junc: Junction) -> list[int]:
+    """Leaf = branch endpoint (last node in the branch list)."""
+    return [br[-1] for br in junc['branches']]
+
+def _geom_shortest_path(graph: nx.Graph, s: int, t: int) -> list[int] | None:
+    """Geometric (Euclidean) shortest path node list; None if no path."""
+    try:
+        return nx.shortest_path(graph, s, t, weight=lambda u, v, d: _euclid_len(graph, u, v))
+    except (nx.NetworkXNoPath, nx.NodeNotFound):
+        return None
+
+def _remove_path_edges(graph: nx.Graph, path_nodes: list[int]) -> set[tuple[int, int]]:
+    """Remove all edges along the given node path; return the removed edge set (ordered)."""
+    removed: set[tuple[int, int]] = set()
+    for a, b in zip(path_nodes[:-1], path_nodes[1:]):
+        e = ordered_edge(a, b)
+        if graph.has_edge(*e):
+            graph.remove_edge(*e)
+            removed.add(e)
+    return removed
+
+def _recompute_tangent_bundle(graph: nx.Graph, branches: BranchSet):
+    tangents = compute_branch_tangents(graph, branches)
+    colinear_map = compute_colinear_map(tangents)
+    return tangents, colinear_map
+
+def refine_x_junctions(
+    graph: nx.Graph,
+    junctions: JunctionMap,
+) -> JunctionMap:
+    """
+    For each X-junction:
+      1) Find the two closest leaf nodes.
+      2) Remove edges along the geometric shortest path between them.
+      3) Drop any branches that touched those removed edges.
+      4) Set the junction center to the midpoint of the two closest leaves.
+      5) Ensure every remaining branch is connected to the center node and
+         straighten all remaining branches as straight segments to the center.
+    """
+    for jid, junc in list(junctions.items()):
+        if junc.get('type', '') != 'X-junction':
+            continue
+
+        # --- Step 1: closest leaf pair
+        leaves = _leaf_nodes_of_junction(junc)
+        if len(leaves) < 4:
+            # Not really an X (or degenerate); skip safely.
+            continue
+
+        li, lj, _ = _pairwise_min_dist_nodes(graph, leaves)
+
+        # --- Step 2: geometric shortest path and removal
+        path = _geom_shortest_path(graph, li, lj)
+        if path is None or len(path) < 2:
+            # No path (already disconnected); still proceed to recenter/straighten.
+            removed_edges: set[tuple[int, int]] = set()
+        else:
+            removed_edges = _remove_path_edges(graph, path)
+
+        # --- Step 3: drop branches that touched removed edges
+        kept_branches: BranchSet = []
+        for br in junc['branches']:
+            br_edges = _branch_edge_set(br)
+            if br_edges.isdisjoint(removed_edges):
+                kept_branches.append(br)
+        junc['branches'] = kept_branches
+
+        # If everything got removed, keep a minimal stub and continue
+        if not junc['branches']:
+            # Recreate two stubs to the two closest leaves so we still have a junction.
+            junc['branches'] = [[junc['node'], li], [junc['node'], lj]]
+
+        # --- Step 4: set center to midpoint of closest leaves
+        p_li = _pos(graph, li)
+        p_lj = _pos(graph, lj)
+        center = 0.5 * (p_li + p_lj)
+
+        center_node = junc['node']  # reuse representative node id
+        _set_pos(graph, center_node, center)
+
+        # --- Step 5: connect all remaining branches to the center + straighten
+        fixed_branches: BranchSet = []
+        for br in junc['branches']:
+            # Ensure the branch is rooted at the center node (hard connection).
+            if br[0] != center_node:
+                # Add an edge from center -> first node if missing, and
+                # make center the first element of the branch path.
+                if not graph.has_edge(center_node, br[0]):
+                    graph.add_edge(center_node, br[0])
+                br = [center_node] + br  # prepend center
+            # Straighten along the segment (endpoint -> center)
+            straighten_branch_toward_center(graph, br, center)
+            fixed_branches.append(br)
+
+        # Update junction bundle + recompute tangents/colinearity (optional but nice)
+        junc['branches'] = fixed_branches
+        tangents, colinear_map = _recompute_tangent_bundle(graph, fixed_branches)
+        junc['tangents'] = tangents
+        junc['colinear_map'] = colinear_map
+        junc['type'] = 'X-junction'  # still an X (>=4 leaves typically)
+
+    return junctions
+
         
 
 # =========================
@@ -573,6 +699,7 @@ def classify_junctions(
     grown   = grow_branches_lockstep(graph, seeds, angle_thresh)
     junctions = classify_grown_junctions(graph, grown, colinear_thresh)
     junctions = merge_nearby_junctions(graph, junctions, merge_radius)
-    straighten_junction_geometry(graph, junctions)
+    junctions = refine_x_junctions(graph, junctions)
+    #straighten_junction_geometry(graph, junctions)
     return junctions
 

@@ -277,55 +277,45 @@ class MPLWidget(QtWidgets.QWidget):
         self.canvas.draw()
 
 
-
     def plot_medial_axis_junctions(self, graph, junctions):
         """
-        Plot T-junctions and Y-junctions on the Matplotlib canvas.
-        
-        junctions : dict
-            The dictionary of junctions returned by the mark_collapsible_edges function.
-        graph : networkx.Graph
-            The input graph with node positions and edges.
+        Plot junctions on the Matplotlib canvas.
+        Assumes `junctions` is a dict of Junction dataclasses.
         """
         # Clear previous junction plots
         self.hide_medial_axis_junctions()
-
-        # Ensure the 'junctions' key exists
         self.artists['junctions'] = []
 
-        # Loop over the junctions
-        for junc_id, data in junctions.items():
-            node = data['node']
-            junction_type = data['type']
-            branches = data['branches']
+        color_map = {
+            'T-junction': 'red',
+            'Y-junction': 'blue',
+            'X-junction': 'green',
+            'unknown':    'cyan',
+        }
 
-            # Get node position
-            position = np.array(graph.nodes[node]['position'])
-            position = position[::-1]
+        for junc in junctions.values():
+            center = junc.center_node
+            jtype  = junc.type
+            color  = color_map.get(jtype, 'cyan')
 
-            # Define the edge colors based on junction type
-            if junction_type == 'T-junction':
-                edge_color = 'red'
-            elif junction_type == 'Y-junction':
-                edge_color = 'blue'
-            elif junction_type == 'X-junction':
-                edge_color = 'green'
-            else:
-                edge_color = 'gray'  # Default for non-T, non-Y junctions
+            # Plot each branch
+            for br in junc.branches:
+                path = br.path_nodes
+                if len(path) < 2:
+                    continue
+                pts = [np.array(graph.nodes[n]['position'])[::-1] for n in path]
+                segments = [np.vstack([pts[i], pts[i+1]]) for i in range(len(pts)-1)]
+                lc = LineCollection(segments, colors=color, linewidths=2, zorder=1)
+                self.axes.add_collection(lc)
+                self.artists['junctions'].append(lc)
 
-            # For each branch, plot the edges
-            for branch in branches:
-                # Create segments from branch
-                positions = [np.array(graph.nodes[branch[i]]['position']) for i in range(len(branch))]
-                positions = [pos[::-1] for pos in positions]
-                segments = [np.vstack([positions[i], positions[i + 1]]) for i in range(len(positions) - 1)]
-                
-                # Create line collection for these segments
-                line_collection = LineCollection(segments, colors=edge_color, linewidths=2, zorder=2)
-                self.axes.add_collection(line_collection)
-                self.artists['junctions'].append(line_collection)
+            # Plot center point
+            cpos = np.array(graph.nodes[center]['position'])[::-1]
+            sc = self.axes.scatter([cpos[0]], [cpos[1]], s=10, c=color, edgecolors='k', zorder=1)
+            self.artists['junctions'].append(sc)
 
         self.canvas.draw()
+
 
 
 

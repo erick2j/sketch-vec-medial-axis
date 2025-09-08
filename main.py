@@ -7,7 +7,7 @@ from image_processing import *
 from distance_to_measure import *
 from curve_extraction import *
 from vector_utils import *
-from junction_repair import *
+from junction_clean_up_working import *
 
 logging.basicConfig(
         level=logging.INFO,
@@ -46,6 +46,7 @@ class MainWindow(QMainWindow):
         self.boundary_contours = None
         self.medial_axis = None
         self.pruned_medial_axis = None
+        self.stroke_graph = None
 
         
 
@@ -194,7 +195,9 @@ class MainWindow(QMainWindow):
         self.medial_axis = slow_medial_axis(self.boundary_contours)
         compute_object_angles(self.medial_axis, unique_contour_points(self.boundary_contours)) 
         self.pruned_medial_axis = prune_by_object_angle(self.medial_axis, self.object_angle)
-        self.junctions = classify_junctions(self.pruned_medial_axis, self.object_angle, merge_radius=self.stroke_width)
+        self.stroke_graph, self.junctions = repair_junctions(self.pruned_medial_axis, self.junction_object_angle,
+                                          self.stroke_width)
+
         self.toggle_medial_axis_object_angles()
 
     def update_on_release_object_angle(self):
@@ -205,7 +208,7 @@ class MainWindow(QMainWindow):
             return
 
         self.pruned_medial_axis = prune_by_object_angle(self.medial_axis, self.object_angle)
-        self.junctions = classify_junctions(self.pruned_medial_axis, self.junction_object_angle)
+        self.stroke_graph, self.junctions = repair_junctions(self.pruned_medial_axis, self.junction_object_angle, self.stroke_width)
         self.toggle_medial_axis_object_angles()
 
     def update_on_release_junction_object_angle(self):
@@ -215,7 +218,7 @@ class MainWindow(QMainWindow):
         if self.medial_axis is None:
             return
 
-        self.junctions = classify_junctions(self.pruned_medial_axis, self.junction_object_angle)
+        self.stroke_graph, self.junctions = repair_junctions(self.pruned_medial_axis, self.junction_object_angle, self.stroke_width)
         self.toggle_medial_axis_object_angles()
         self.toggle_medial_axis_junctions()
         
@@ -285,20 +288,20 @@ class MainWindow(QMainWindow):
      
 
     def toggle_medial_axis(self):
-        if self.ui.stroke_graph_checkbox.isChecked() and self.pruned_medial_axis is not None:
-            self.ui.mpl_widget.plot_medial_axis(self.pruned_medial_axis)
+        if self.ui.stroke_graph_checkbox.isChecked() and self.stroke_graph is not None:
+            self.ui.mpl_widget.plot_medial_axis(self.stroke_graph)
         else:
             self.ui.mpl_widget.hide_medial_axis()
 
     def toggle_medial_axis_object_angles(self):
-        if self.ui.object_angle_checkbox.isChecked() and self.pruned_medial_axis is not None:
-            self.ui.mpl_widget.plot_medial_axis_object_angles(self.pruned_medial_axis)
+        if self.ui.object_angle_checkbox.isChecked() and self.stroke_graph is not None:
+            self.ui.mpl_widget.plot_medial_axis_object_angles(self.stroke_graph)
         else:
             self.ui.mpl_widget.hide_medial_axis_object_angles()
 
     def toggle_medial_axis_junctions(self):
-        if self.ui.junctions_checkbox.isChecked() and self.pruned_medial_axis is not None:
-            self.ui.mpl_widget.plot_medial_axis_junctions(self.pruned_medial_axis, self.junctions)
+        if self.ui.junctions_checkbox.isChecked() and self.stroke_graph is not None:
+            self.ui.mpl_widget.plot_medial_axis_junctions(self.stroke_graph, self.junctions)
         else:
             self.ui.mpl_widget.hide_medial_axis_junctions()
 
