@@ -7,7 +7,8 @@ from image_processing import *
 from distance_to_measure import *
 from curve_extraction import *
 from vector_utils import *
-from junction_clean_up_working import *
+#from junction_clean_up_working import *
+from junction_graph import *
 
 logging.basicConfig(
         level=logging.INFO,
@@ -195,8 +196,8 @@ class MainWindow(QMainWindow):
         self.medial_axis = slow_medial_axis(self.boundary_contours)
         compute_object_angles(self.medial_axis, unique_contour_points(self.boundary_contours)) 
         self.pruned_medial_axis = prune_by_object_angle(self.medial_axis, self.object_angle)
-        self.stroke_graph, self.junctions = repair_junctions(self.pruned_medial_axis, self.junction_object_angle,
-                                          self.stroke_width)
+        self.stroke_graph, self.subtrees = build_junction_subtrees(self.pruned_medial_axis, self.junction_object_angle, self.stroke_width)
+        self.analyses = analyze_subtrees(self.stroke_graph, self.subtrees, colinear_dot=0.95)
 
         self.toggle_medial_axis_object_angles()
 
@@ -208,7 +209,9 @@ class MainWindow(QMainWindow):
             return
 
         self.pruned_medial_axis = prune_by_object_angle(self.medial_axis, self.object_angle)
-        self.stroke_graph, self.junctions = repair_junctions(self.pruned_medial_axis, self.junction_object_angle, self.stroke_width)
+        self.stroke_graph, self.subtrees = build_junction_subtrees(self.pruned_medial_axis, self.junction_object_angle, self.stroke_width)
+        self.analyses = analyze_subtrees(self.stroke_graph, self.subtrees, colinear_dot=0.95)
+
         self.toggle_medial_axis_object_angles()
 
     def update_on_release_junction_object_angle(self):
@@ -218,7 +221,8 @@ class MainWindow(QMainWindow):
         if self.medial_axis is None:
             return
 
-        self.stroke_graph, self.junctions = repair_junctions(self.pruned_medial_axis, self.junction_object_angle, self.stroke_width)
+        self.stroke_graph, self.subtrees = build_junction_subtrees(self.pruned_medial_axis, self.junction_object_angle, self.stroke_width)
+        self.analyses = analyze_subtrees(self.stroke_graph, self.subtrees, colinear_dot=0.95)
         self.toggle_medial_axis_object_angles()
         self.toggle_medial_axis_junctions()
         
@@ -301,9 +305,16 @@ class MainWindow(QMainWindow):
 
     def toggle_medial_axis_junctions(self):
         if self.ui.junctions_checkbox.isChecked() and self.stroke_graph is not None:
-            self.ui.mpl_widget.plot_medial_axis_junctions(self.stroke_graph, self.junctions)
+            self.ui.mpl_widget.plot_junction_subtrees(self.stroke_graph, self.subtrees)
+            self.ui.mpl_widget.plot_subtree_leaf_tangents(self.stroke_graph, self.analyses, length=14.0, color='black', linewidth=1.2)
+            self.ui.mpl_widget.plot_leaf_order_labels(self.stroke_graph, self.analyses)
+
+            #self.ui.mpl_widget.plot_medial_axis_junctions(self.stroke_graph, self.junctions)
         else:
-            self.ui.mpl_widget.hide_medial_axis_junctions()
+            self.ui.mpl_widget.hide_junction_subtrees()
+            self.ui.mpl_widget.hide_subtree_leaf_tangents()
+            self.ui.mpl_widget.hide_leaf_order_labels()
+            #self.ui.mpl_widget.hide_medial_axis_junctions()
 
 
     ### Getters for sliders

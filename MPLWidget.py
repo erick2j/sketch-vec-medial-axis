@@ -317,8 +317,278 @@ class MPLWidget(QtWidgets.QWidget):
         self.canvas.draw()
 
 
+    def plot_junction_subtrees(
+        self,
+        graph,
+        subtrees,
+        linewidth=2.0,
+        cmap_name='tab20',
+        alpha=0.9,
+        show_nodes=False,
+        node_size=8,
+        node_edgecolor='black',
+    ):
+        """
+        Draw each subtree in a distinct color.
+
+        Parameters
+        ----------
+        graph : nx.Graph
+            The full graph containing positions at each node: G.nodes[n]['position'] = (row, col).
+        subtrees : iterable
+            Each item may be:
+              - a dataclass/object with attributes .edges (iterable of (u,v)) and .nodes (iterable of n),
+              - a dict with keys 'edges' and 'nodes',
+              - a tuple (nodes, edges).
+        linewidth : float
+            Line width for subtree edges.
+        cmap_name : str
+            Matplotlib categorical colormap name (e.g., 'tab20', 'tab10', 'Set3').
+        alpha : float
+            Edge alpha for visibility.
+        show_nodes : bool
+            If True, also scatter the nodes of each subtree in the same color.
+        node_size : float
+            Marker size for nodes if show_nodes=True.
+        node_edgecolor : str
+            Edge color for node markers (for contrast).
+        """
+        if graph is None:
+            return
+        if not subtrees:
+            return
+
+        # Remove any previously drawn subtrees first
+        self.hide_junction_subtrees()
+
+        # Ensure storage
+        self.artists['junction_subtrees'] = []
+
+        # Get deterministic ordering of node positions (not strictly required here)
+        # but we’ll fetch directly per edge/node to avoid extra mapping.
+
+        # Colormap for distinct colors
+        cmap = plt.colormaps.get_cmap(cmap_name)
+        num_colors = getattr(cmap, 'N', 20)
+
+        def _coerce_subtree(st):
+            """Return (nodes_set, edges_set) from various subtree shapes."""
+            if hasattr(st, 'nodes') and hasattr(st, 'edges'):
+                return set(st.nodes), set(st.edges)
+            if isinstance(st, dict) and 'nodes' in st and 'edges' in st:
+                return set(st['nodes']), set(st['edges'])
+            if isinstance(st, tuple) and len(st) == 2:
+                n, e = st
+                return set(n), set(e)
+            raise TypeError("Subtree must have 'nodes' and 'edges' (object, dict, or (nodes, edges)).")
+
+        for i, st in enumerate(subtrees):
+            nodes_set, edges_set = _coerce_subtree(st)
+            color = cmap(i % num_colors)
+
+            # Build edge segments (convert stored (row, col) -> (x, y) = (col, row))
+            segs = []
+            for (u, v) in edges_set:
+                if not graph.has_node(u) or not graph.has_node(v):
+                    continue
+                pu = np.asarray(graph.nodes[u]['position'], dtype=float)
+                pv = np.asarray(graph.nodes[v]['position'], dtype=float)
+                segs.append(np.vstack([pu[::-1], pv[::-1]]))  # flip to (x,y)
+
+            if segs:
+                lc = LineCollection(
+                    segs,
+                    colors=[color],
+                    linewidths=linewidth,
+                    alpha=alpha,
+                    zorder=5
+                )
+                self.axes.add_collection(lc)
+                self.artists['junction_subtrees'].append(lc)
+
+            if show_nodes and nodes_set:
+                pts = []
+                for n in nodes_set:
+                    if not graph.has_node(n):
+                        continue
+                    p = np.asarray(graph.nodes[n]['position'], dtype=float)[::-1]
+                    pts.append(p)
+                if pts:
+                    pts = np.asarray(pts)
+                    sc = self.axes.scatter(
+                        pts[:, 0], pts[:, 1],
+                        s=node_size,
+                        c=[color],
+                        edgecolors=node_edgecolor,
+                        linewidths=0.3,
+                        zorder=6
+                    )
+                    self.artists['junction_subtrees'].append(sc)
+
+        # Keep axes tidy & redraw
+        self.axes.axis('image')
+        self.axes.axis('off')
+        self.canvas.draw()
 
 
+    def plot_junction_subtrees_by_leaf_count(
+        self,
+        graph,
+        analyses,                # List[SubtreeAnalysis]
+        cmap_name='viridis',     # continuous colormap
+        linewidth=2.5,
+        alpha=0.95,
+        vmin=None,
+        vmax=None,
+        show_nodes=False,
+        node_size=10,
+        node_edgecolor='black',
+    ):
+        """
+        Color each subtree by its number of leaves. 'analyses' is the output of analyze_subtrees(...).
+        """
+        if graph is None or not analyses:
+            return
+
+        # clear previous
+        self.hide_junction_subtrees()
+        self.artists['junction_subtrees'] = []
+
+        # color scale based on leaf_count
+        counts = np.array([a.leaf_count for a in analyses], dtype=float)
+        if vmin is None: vmin = float(counts.min())
+        if vmax is None: vmax = float(counts.max())
+        norm = Normalize(vmin=vmin, vmax=vmax)
+        cmap = plt.colormaps.get_cmap(cmap_name)
+
+        for a in analyses:
+            color = cmap(norm(float(a.leaf_count)))
+
+            # edge segments
+            segs = []
+            for (u, v) in a.edges:
+                if not graph.has_node(u) or not graph.has_node(v):
+                    continue
+                pu = np.asarray(graph.nodes[u]['position'], float)
+                pv = np.asarray(graph.nodes[v]['position'], float)
+                segs.append(np.vstack([pu[::-1], pv[::-1]]))
+            if segs:
+                lc = LineCollection(segs, colors=[color], linewidths=linewidth, alpha=alpha, zorder=5)
+                self.axes.add_collection(lc)
+                self.artists['junction_subtrees'].append(lc)
+
+            if show_nodes and a.nodes:
+                pts = np.array([np.asarray(graph.nodes[n]['position'], float)[::-1] for n in a.nodes if graph.has_node(n)])
+                if len(pts):
+                    sc = self.axes.scatter(pts[:,0], pts[:,1], s=node_size, c=[color],
+                                           edgecolors=node_edgecolor, linewidths=0.3, zorder=6)
+                    self.artists['junction_subtrees'].append(sc)
+
+        self.axes.axis('image'); self.axes.axis('off')
+        self.canvas.draw()
+
+
+    def plot_subtree_leaf_tangents(
+        self,
+        graph,
+        analyses,                 # List[SubtreeAnalysis]
+        length=10.0,
+        linewidth=2.0,
+        color='red',
+        alpha=0.8,               
+        linestyle='dotted',       
+    ):
+        """
+        Draw short tangent segments for each leaf node, pointing inward.
+        """
+        if graph is None or not analyses:
+            return
+
+        self.hide_subtree_leaf_tangents()
+        self.artists['subtree_leaf_tangents'] = []
+
+        segs = []
+        for a in analyses:
+            for leaf, u_rc in a.leaf_tangents.items():
+                if not graph.has_node(leaf):
+                    continue
+                p_rc = np.asarray(graph.nodes[leaf]['position'], float)  # [row, col]
+                start_xy = p_rc[::-1]  # (x, y)
+                end_xy = np.array([p_rc[1] + length * u_rc[1],
+                                   p_rc[0] + length * u_rc[0]], dtype=float)
+                segs.append(np.vstack([start_xy, end_xy]))
+
+        if segs:
+            lc = LineCollection(
+                segs,
+                colors=[color],
+                linewidths=linewidth,
+                alpha=alpha,
+                linestyle=linestyle,
+                zorder=7
+            )
+            self.axes.add_collection(lc)
+            self.artists['subtree_leaf_tangents'].append(lc)
+
+        self.canvas.draw()
+
+    def plot_leaf_order_labels(self, graph, analyses, color='cyan', fontsize=8, dy=0.2):
+        """
+        Draw small numbers near each leaf showing its CCW index (0..L-1).
+        'dy' nudges the label upward in display pixels (negative is up).
+        """
+        if graph is None or not analyses:
+            return
+
+        # clear old labels
+        if 'leaf_order_labels' in self.artists:
+            for t in self.artists['leaf_order_labels']:
+                try: t.remove()
+                except Exception: pass
+            del self.artists['leaf_order_labels']
+
+        self.artists['leaf_order_labels'] = []
+        for a in analyses:
+            for k, leaf in enumerate(a.leaf_order_ccw):
+                p = np.asarray(graph.nodes[leaf]['position'], float)
+                x, y = p[1], p[0]
+                txt = self.axes.text(x, y + dy, str(k), color=color, fontsize=fontsize,
+                                     ha='center', va='center', zorder=10)
+                self.artists['leaf_order_labels'].append(txt)
+        self.canvas.draw()
+
+        
+    def hide_leaf_order_labels(self):
+        if 'leaf_order_labels' in self.artists:
+            for t in self.artists['leaf_order_labels']:
+                try: t.remove()
+                except Exception: pass
+            del self.artists['leaf_order_labels']
+            self.canvas.draw()
+
+    def hide_subtree_leaf_tangents(self):
+        if 'subtree_leaf_tangents' in self.artists:
+            for artist in self.artists['subtree_leaf_tangents']:
+                try:
+                    artist.remove()
+                except (AttributeError, ValueError):
+                    pass
+            del self.artists['subtree_leaf_tangents']
+            self.canvas.draw()
+
+
+    def hide_junction_subtrees(self):
+        """
+        Remove all previously drawn subtree artists.
+        """
+        if 'junction_subtrees' in self.artists:
+            for artist in self.artists['junction_subtrees']:
+                try:
+                    artist.remove()
+                except (AttributeError, ValueError):
+                    pass
+            del self.artists['junction_subtrees']
+            self.canvas.draw()
 
     def hide_medial_axis(self):
         if 'medial_axis_edges' in self.artists:
