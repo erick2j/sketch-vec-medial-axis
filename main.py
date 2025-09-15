@@ -8,7 +8,7 @@ from distance_to_measure import *
 from curve_extraction import *
 from vector_utils import *
 #from junction_clean_up_working import *
-from junction_graph import *
+from junction_analysis import *
 
 logging.basicConfig(
         level=logging.INFO,
@@ -196,8 +196,9 @@ class MainWindow(QMainWindow):
         self.medial_axis = slow_medial_axis(self.boundary_contours)
         compute_object_angles(self.medial_axis, unique_contour_points(self.boundary_contours)) 
         self.pruned_medial_axis = prune_by_object_angle(self.medial_axis, self.object_angle)
-        self.stroke_graph, self.subtrees = build_junction_subtrees(self.pruned_medial_axis, self.junction_object_angle, self.stroke_width)
-        self.analyses = analyze_subtrees(self.stroke_graph, self.subtrees, colinear_dot=0.95)
+        self.stroke_graph, result = process_junctions(self.pruned_medial_axis, self.junction_object_angle, self.stroke_width)
+        self.subtrees = result["subtrees"]
+        self.analyses = result["analyses"]
 
         self.toggle_medial_axis_object_angles()
 
@@ -209,8 +210,9 @@ class MainWindow(QMainWindow):
             return
 
         self.pruned_medial_axis = prune_by_object_angle(self.medial_axis, self.object_angle)
-        self.stroke_graph, self.subtrees = build_junction_subtrees(self.pruned_medial_axis, self.junction_object_angle, self.stroke_width)
-        self.analyses = analyze_subtrees(self.stroke_graph, self.subtrees, colinear_dot=0.95)
+        self.stroke_graph, result = process_junctions(self.pruned_medial_axis, self.junction_object_angle, self.stroke_width)
+        self.subtrees = result["subtrees"]
+        self.analyses = result["analyses"]
 
         self.toggle_medial_axis_object_angles()
 
@@ -221,8 +223,10 @@ class MainWindow(QMainWindow):
         if self.medial_axis is None:
             return
 
-        self.stroke_graph, self.subtrees = build_junction_subtrees(self.pruned_medial_axis, self.junction_object_angle, self.stroke_width)
-        self.analyses = analyze_subtrees(self.stroke_graph, self.subtrees, colinear_dot=0.95)
+        self.stroke_graph, result = process_junctions(self.pruned_medial_axis, self.junction_object_angle, self.stroke_width)
+        self.subtrees = result["subtrees"]
+        self.analyses = result["analyses"]
+
         self.toggle_medial_axis_object_angles()
         self.toggle_medial_axis_junctions()
         

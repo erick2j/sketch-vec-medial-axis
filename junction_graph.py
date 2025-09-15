@@ -28,6 +28,7 @@ class BranchStopReason(Enum):
     AngleExceeded = auto()
     DeadEnd = auto()
     ClaimedEdge = auto()
+    EdgeOwnedByOther = auto()
 
 
 @dataclass(frozen=True)
@@ -97,80 +98,84 @@ def edge_len(G: nx.Graph, u: NodeId, v: NodeId) -> float:
 def _ordered_edge(u: NodeId, v: NodeId) -> Edge:
     return (u, v) if u < v else (v, u)
 
+def _ordered_edge(u: NodeId, v: NodeId) -> Edge:
+    return (u, v) if u < v else (v, u)
+
+def _unique_next_neighbor(G: nx.Graph, prev: NodeId, curr: NodeId) -> Optional[NodeId]:
+    fwd = [n for n in G.neighbors(curr) if n != prev]
+    return fwd[0] if len(fwd) == 1 else None
 
 # -----------------------------
 # Growth implementation
 # -----------------------------
-
-
-def _unique_next_neighbor(G: nx.Graph, prev: NodeId, curr: NodeId) -> Optional[NodeId]:
-    """Return the unique forward neighbor (not back to prev) or None."""
-    fwd = [n for n in G.neighbors(curr) if n != prev]
-    return fwd[0] if len(fwd) == 1 else None
-
-
-def grow_from_center(G: nx.Graph, center: NodeId, angle_thresh: float) -> GrownJunction:
-    """Grow branches outward from a degree>=3 node until stop conditions are met.
-
-    Stop rules per branch:
-      - ReachedJunction: hit another node with degree >= 3 (not the seed center)
-      - Fork: arrived at a node with multiple forward choices (non-unique next neighbor)
-      - AngleExceeded: the edge's 'object_angle' > angle_thresh (edge still appended)
-      - ClaimedEdge: an interior edge was already claimed by another branch in this growth
+def grow_from_center_owned(
+    G: nx.Graph,
+    center: NodeId,
+    angle_thresh: float,
+    edge_owner: Dict[Edge, NodeId],   # shared across all centers
+):
+    """
+    Grow branches from a degree>=3 node.
+    An edge can be owned by at most one center (first-come in sorted center order).
+    Stops a branch with EdgeOwnedByOther if it hits an edge already owned by another center.
     """
     assert G.degree[center] >= 3
 
-    branches: List[Path] = []
-    claimed_edges: set[Edge] = set()
-
+    branches = []  # list[Path]
     for nb in G.neighbors(center):
         branch = [center, nb]
         prev, curr = center, nb
 
         while True:
-            # Stop if current node is a junction (other than the seed center)
+            # (1) stop if we reached another junction (not the seed center)
             if G.degree[curr] >= 3 and curr != center:
                 branches.append(Path(tuple(branch), BranchStopReason.ReachedJunction))
                 break
 
+            # (2) unique-forward step?
             nxt = _unique_next_neighbor(G, prev, curr)
             if nxt is None:
+                # either fork or dead-end (non-unique or zero forward neighbors)
+                # we can’t easily tell zero vs >1 without re-check; keep previous semantics: Fork
                 branches.append(Path(tuple(branch), BranchStopReason.Fork))
                 break
 
             e = _ordered_edge(curr, nxt)
-            interior = (G.degree[curr] < 3 and G.degree[nxt] < 3)
 
-            angle = G[curr][nxt].get("object angle", 0.0)
-            if angle > angle_thresh:
+            # (3) ownership check (global)
+            owner = edge_owner.get(e)
+            if owner is None or owner == center:
+                # append, claim, maybe stop on angle
+                angle = float(G[curr][nxt].get('object angle', 0.0))
                 branch.append(nxt)
-                if interior:
-                    claimed_edges.add(e)
-                branches.append(Path(tuple(branch), BranchStopReason.AngleExceeded))
-                break
+                edge_owner[e] = center  # claim for my center
 
-            if interior and e in claimed_edges:
-                branches.append(Path(tuple(branch), BranchStopReason.ClaimedEdge))
-                break
+                if angle > angle_thresh:
+                    branches.append(Path(tuple(branch), BranchStopReason.AngleExceeded))
+                    break
 
-            branch.append(nxt)
-            if interior:
-                claimed_edges.add(e)
-            prev, curr = curr, nxt
+                prev, curr = curr, nxt
+                continue
 
+            # (4) someone else owns it -> stop this branch here
+            branches.append(Path(tuple(branch), BranchStopReason.EdgeOwnedByOther))
+            break
+
+    # pack grown junction
     nodes = frozenset(n for br in branches for n in br.nodes)
-    edges = frozenset(e for br in branches for e in br.edges())
-
+    edges = frozenset(_ordered_edge(u, v) for br in branches for u, v in zip(br.nodes[:-1], br.nodes[1:]))
     return GrownJunction(center=center, branches=tuple(branches), nodes=nodes, edges=edges)
 
 
-def detect_grown_junctions(G: nx.Graph, angle_thresh: float) -> List[GrownJunction]:
-    """Detect grown junctions for all degree>=3 nodes in G."""
+def detect_grown_junctions(G: nx.Graph, angle_thresh: float):
+    """
+    Deterministic order (sorted node ids). Global ownership prevents overlapping subtrees.
+    """
+    edge_owner: Dict[Edge, NodeId] = {}
     grown: List[GrownJunction] = []
-    for n in G.nodes:
-        if G.degree[n] >= 3:
-            gj = grow_from_center(G, n, angle_thresh)
-            grown.append(gj)
+    for center in sorted(n for n in G.nodes if G.degree[n] >= 3):
+        gj = grow_from_center_owned(G, center, angle_thresh, edge_owner)
+        grown.append(gj)
     return grown
 
 # -----------------------------
@@ -358,3 +363,102 @@ def build_junction_subtrees(G: nx.Graph, angle_thresh: float, merge_radius: floa
     subtrees = cluster_and_merge(G, grown, merge_radius, weight=weight)
     return G, subtrees
 
+def process_junctions(
+    G: nx.Graph,
+    angle_thresh: float = 0.35,
+    merge_radius: float = 6.0,
+    analysis_colinear_dot: float = 0.95,
+    t_rewire_colinear_dot: float = 0.95,
+    weight: str = "euclidean",
+    mutate: bool = True,
+) -> Dict[str, Any]:
+    """
+    One-call pipeline:
+      1) Detect grown junctions from all degree>=3 seeds using 'angle_thresh'.
+      2) Cluster by single-link proximity (center distance <= merge_radius), then bridge to connected subtrees.
+      3) Analyze each subtree (leaf nodes, two-edge inward tangents, CCW order).
+      4) Rewire only 3-leaf T-junctions:
+           - find most-colinear leaf pair (|dot| >= t_rewire_colinear_dot),
+           - build bar between those leaves,
+           - attach the third branch at ray∩bar (or closest point),
+           - replace original subtree edges with the new 3-edge configuration via a new center node.
+      Returns a report with intermediate artifacts and rewiring actions.
+
+    Parameters
+    ----------
+    G : nx.Graph
+        Graph with node attribute 'position' = [row, col] and edge attribute 'object angle'.
+    angle_thresh : float
+        Stop criterion for growth (edge appended, then stop if 'object angle' > threshold).
+    merge_radius : float
+        Single-link clustering radius for merging grown structures by center proximity.
+    analysis_colinear_dot : float
+        Cosine threshold for classifying 3-leaf subtrees into T vs Y during analysis.
+    t_rewire_colinear_dot : float
+        Cosine threshold for deciding the colinear pair during T rewiring (noise tolerance).
+    weight : str
+        'euclidean' (default) for geometric bridging.
+    mutate : bool
+        If True, rewiring mutates G in place. If False, rewiring is skipped (dry run).
+
+    Returns
+    -------
+    dict with keys:
+        'grown'     : List[GrownJunction]
+        'subtrees'  : List[JunctionSubtree]
+        'analyses'  : List[SubtreeAnalysis]
+        'rewires'   : List[dict] (only if mutate=True; one entry per successful T rewire)
+        'skipped'   : List[Tuple[int, str]] (subtree_index, reason)
+    """
+    # 1) grow
+    grown = detect_grown_junctions(G, angle_thresh)
+
+    # 2) cluster & bridge into connected subtrees
+    subtrees = cluster_and_merge(G, grown, merge_radius, weight=weight)
+
+    # 3) analyze (with your two-edge tangent improvement integrated in analyze_subtrees)
+    analyses = analyze_subtrees(G, subtrees, colinear_dot=analysis_colinear_dot, center_mode="median")
+
+    # 4) rewire 3-leaf T-junctions
+    rewires: List[dict] = []
+    skipped: List[Tuple[int, str]] = []
+
+    for a in analyses:
+        if a.leaf_count != 3:
+            skipped.append((a.subtree_index, "not-3-leaf"))
+            continue
+
+        # Decide if it's T-like (exact logic is inside rewire_subtree_T via colinear threshold)
+        if not mutate:
+            # Dry run: just check if it *would* rewire
+            leaves = a.leaf_nodes
+            tmap = a.leaf_tangents
+            # quick best-pair check (same as rewire function)
+            i, j, k = leaves
+            pairs = [(i, j), (i, k), (j, k)]
+            best_s = -1.0
+            for u, v in pairs:
+                s = abs(float(np.dot(tmap[u], tmap[v])))
+                if s > best_s:
+                    best_s = s
+            if best_s >= float(t_rewire_colinear_dot):
+                rewires.append({"type": "T-rewire (dry)", "subtree_index": a.subtree_index, "score_absdot": best_s})
+            else:
+                skipped.append((a.subtree_index, "3-leaf-but-not-colinear-enough"))
+            continue
+
+        # Mutating rewire
+        rep = rewire_subtree_T(G, a, colinear_dot_thresh=t_rewire_colinear_dot)
+        if rep is not None:
+            rep["subtree_index"] = a.subtree_index
+            rewires.append(rep)
+        else:
+            skipped.append((a.subtree_index, "3-leaf-but-not-colinear-enough"))
+
+    return G, {
+        "grown": grown,
+        "subtrees": subtrees,
+        "analyses": analyses,
+        "rewires": rewires,
+        "skipped": skipped,
+    }
