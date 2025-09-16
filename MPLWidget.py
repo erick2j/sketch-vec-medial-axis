@@ -206,7 +206,7 @@ class MPLWidget(QtWidgets.QWidget):
         self.canvas.draw()
 
 
-    def plot_medial_axis(self, graph, color='red', linewidth=1.0, vertex_color='black', vertex_size=1):
+    def plot_medial_axis(self, graph, color='red', linewidth=1.0, vertex_color='black', vertex_size=0):
         """
         Plots medial axis edges and vertices.
         """
