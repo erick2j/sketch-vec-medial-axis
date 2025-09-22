@@ -70,6 +70,17 @@ class GrownJunction:
     nodes: frozenset[NodeId]
     edges: frozenset[Edge]
 
+
+@dataclass
+class _BranchState:
+    """Internal mutable state for one growing branch during simultaneous expansion."""
+    center: NodeId
+    prev: NodeId
+    curr: NodeId
+    path: List[NodeId]
+    active: bool = True
+    stop: Optional[BranchStopReason] = None
+
 @dataclass(frozen=True)
 class JunctionSubtree:
     """A connected union of grown junctions (with optional bridges)."""
@@ -219,7 +230,18 @@ def grow_from_center(
     branches: List[Path] = []
 
     for nb in G.neighbors(center):
-        branch = [center, nb]
+        branch = [center]
+
+        e0 = ordered_edge(center, nb)
+        owner0 = edge_owner.get(e0)
+        if owner0 is not None and owner0 != center:
+            branches.append(Path(tuple(branch), BranchStopReason.EdgeOwnedByOther))
+            continue
+
+        # Claim the first edge out of the center before traversing further.
+        edge_owner[e0] = center
+
+        branch.append(nb)
         prev, curr = center, nb
 
         while True:
@@ -256,12 +278,94 @@ def grow_from_center(
     return GrownJunction(center=center, branches=tuple(branches), nodes=nodes, edges=edges)
 
 def detect_grown_junctions(G: nx.Graph, angle_thresh: float) -> List[GrownJunction]:
-    """Run growth deterministically for all nodes with degree >= 3."""
+    """Grow all junction centers in lockstep so no single center monopolizes edges."""
+    centers = sorted(n for n in G.nodes if G.degree[n] >= 3)
+    if not centers:
+        return []
+
     edge_owner: Dict[Edge, NodeId] = {}
-    out: List[GrownJunction] = []
-    for c in sorted(n for n in G.nodes if G.degree[n] >= 3):
-        out.append(grow_from_center(G, c, angle_thresh, edge_owner))
-    return out
+
+    center_data: Dict[NodeId, Dict[str, object]] = {
+        c: {
+            "branches": [],          # list[Path]
+            "nodes": {c},            # set[NodeId]
+            "edges": set(),          # set[Edge]
+        }
+        for c in centers
+    }
+
+    states: List[_BranchState] = []
+    for center in centers:
+        for nb in G.neighbors(center):
+            states.append(_BranchState(center=center, prev=center, curr=nb, path=[center]))
+
+    def finalize(state: _BranchState, reason: BranchStopReason) -> None:
+        if not state.active:
+            return
+        state.stop = reason
+        state.active = False
+        center_data[state.center]["branches"].append(Path(tuple(state.path), reason))
+
+    active = [s for s in states if s.active]
+    while active:
+        next_active: List[_BranchState] = []
+        for state in active:
+            if not state.active:
+                continue
+
+            prev = state.prev
+            curr = state.curr
+            edge = ordered_edge(prev, curr)
+            owner = edge_owner.get(edge)
+
+            if owner is None:
+                edge_owner[edge] = state.center
+            elif owner != state.center:
+                finalize(state, BranchStopReason.EdgeOwnedByOther)
+                continue
+
+            if not state.path or state.path[-1] != curr:
+                state.path.append(curr)
+                center_data[state.center]["nodes"].add(curr)
+                center_data[state.center]["edges"].add(edge)
+
+            angle = float(G[prev][curr].get("object angle", 0.0))
+            if angle > angle_thresh:
+                finalize(state, BranchStopReason.AngleExceeded)
+                continue
+
+            if G.degree[curr] >= 3 and curr != state.center:
+                finalize(state, BranchStopReason.ReachedJunction)
+                continue
+
+            fwd = [n for n in G.neighbors(curr) if n != prev]
+            if not fwd:
+                finalize(state, BranchStopReason.DeadEnd)
+                continue
+            if len(fwd) > 1:
+                finalize(state, BranchStopReason.Fork)
+                continue
+
+            nxt = fwd[0]
+            state.prev = curr
+            state.curr = nxt
+            next_active.append(state)
+
+        active = next_active
+
+    # Finalize any states that never progressed beyond the center (e.g. isolated centers)
+    for state in states:
+        if state.active:
+            finalize(state, BranchStopReason.DeadEnd)
+
+    grown: List[GrownJunction] = []
+    for center in centers:
+        data = center_data[center]
+        branches = tuple(data["branches"])
+        nodes = frozenset(data["nodes"])
+        edges = frozenset(data["edges"])
+        grown.append(GrownJunction(center=center, branches=branches, nodes=nodes, edges=edges))
+    return grown
 
 
 # =============================================================================
@@ -272,13 +376,25 @@ def _within_radius(G: nx.Graph, a: NodeId, b: NodeId, r: float) -> bool:
     return float(np.linalg.norm(pos(G, a) - pos(G, b))) <= float(r)
 
 def _build_center_proximity(grown: List[GrownJunction], G: nx.Graph, merge_radius: float) -> Dict[int, Set[int]]:
+    """
+    Build an adjacency graph over grown junctions combining two criteria:
+      - Euclidean center distance <= merge_radius.
+      - Shared graph nodes (overlapping node sets).
+    """
     adj: Dict[int, Set[int]] = {i: set() for i in range(len(grown))}
     for i in range(len(grown)):
-        ci = grown[i].center
+        gi = grown[i]
+        ci = gi.center
         for j in range(i + 1, len(grown)):
-            cj = grown[j].center
-            if _within_radius(G, ci, cj, merge_radius):
-                adj[i].add(j); adj[j].add(i)
+            gj = grown[j]
+            cj = gj.center
+
+            near = _within_radius(G, ci, cj, merge_radius)
+            overlap = bool(gi.nodes & gj.nodes)
+
+            if near or overlap:
+                adj[i].add(j)
+                adj[j].add(i)
     return adj
 
 def _components(adj: Dict[int, Set[int]]) -> List[List[int]]:
@@ -397,7 +513,7 @@ def cluster_and_merge(
     merge_radius: float,
     weight: str = "euclidean",
 ) -> List[JunctionSubtree]:
-    """Single-link cluster on center proximity, then bridge each cluster into one connected subtree."""
+    """Single-link cluster on center proximity or shared nodes, then bridge each cluster into one connected subtree."""
     if not grown:
         return []
     prox = _build_center_proximity(grown, G, merge_radius)
@@ -569,11 +685,13 @@ def analyze_subtrees(G: nx.Graph, subtrees: List[JunctionSubtree], colinear_dot:
 #       a) Connect all disjoint colinear pairs (|dot| >= colinear_dot).
 #       b) If none exist, compute center from average ray–ray intersections (snap if outside hull),
 #          and connect all leaves to center.
-#       c) For remaining leaves (unmatched), project as rays and attach to furthest hit on any paired segment,
+#       c) For remaining leaves (unmatched), project as rays and attach to the closest hit on any paired segment,
 #          splitting the segment at intersection. If no hit, snap to endpoint closest to the line–ray
 #          intersection point on that segment's infinite line; if no forward line hit, snap to endpoint with
 #          smallest distance to the ray.
 # =============================================================================
+
+_RAY_INTERSECT_EPS = 1e-6
 
 def colinear_pair_matching(
     leaves: List[NodeId],
@@ -721,7 +839,7 @@ def rewire_general(
       1) Remove original subtree edges.
       2) If there are colinear pairs (|dot| >= colinear_dot), connect each pair by an edge.
       3) For unmatched leaves, cast inward tangent as a ray. If it hits any pair segment:
-         attach to the furthest hit (max t) and split that segment at the hit point.
+         attach to the nearest valid hit (min t) and split that segment at the hit point.
       4) If no hit:
          - choose the pair segment whose *line* intersects the ray with smallest forward t,
            snap to the endpoint closest to that line intersection point;
@@ -771,19 +889,19 @@ def rewire_general(
         p = pos(G, leaf)
         uvec = unit(analysis.leaf_tangents[leaf])
 
-        # Try true segment intersections; keep furthest (max t)
-        best_t, best_seg, best_s, best_point = -1.0, None, None, None
+        # Try true segment intersections; keep closest (min t)
+        best_t, best_seg, best_s, best_point = float("inf"), None, None, None
 
         for a, b in pair_segments:
             pa, pb = pos(G, a), pos(G, b)
-            res = ray_segment_intersection_params(pa, pb, p, uvec)
+            res = ray_segment_intersection_params(pa, pb, p, uvec, eps=_RAY_INTERSECT_EPS)
             if res is None:
                 continue
             t, s, X = res
-            if t > best_t:
+            if t < best_t:
                 best_t, best_seg, best_s, best_point = t, (a, b), s, X
 
-        if best_seg is not None:
+        if best_seg is not None and best_t < float("inf"):
             splits_by_segment.setdefault(best_seg, []).append((best_s, best_point))
             leaf_to_attach[leaf] = (best_seg, best_s, best_point)
             continue
@@ -795,7 +913,7 @@ def rewire_general(
 
         for a, b in pair_segments:
             pa, pb = pos(G, a), pos(G, b)
-            res_line = ray_line_intersection_params(pa, pb, p, uvec)
+            res_line = ray_line_intersection_params(pa, pb, p, uvec, eps=_RAY_INTERSECT_EPS)
             if res_line is None:
                 continue
             t_line, s_line, X_line = res_line
@@ -881,12 +999,12 @@ def process_junctions(
 
       1) Grow from all degree>=3 centers with global edge ownership,
          stopping on 'object angle' threshold.
-      2) Cluster nearby centers by single-link (<= merge_radius) and
-         bridge the cluster into a connected subtree.
+      2) Cluster nearby centers by single-link (<= merge_radius) or
+         shared nodes, then bridge the cluster into a connected subtree.
       3) Analyze each subtree (leaves, two-edge inward tangents, CCW order).
       4) Rewire:
          - If ≥1 colinear pair: connect disjoint pairs by straight edges.
-           For remaining leaves, project rays; attach to furthest hit on
+           For remaining leaves, project rays; attach to the closest hit on
            any pair segment (splitting as needed). No hit → snap per rules.
          - Else: average ray–ray intersections, snap to hull if needed,
            and connect all leaves to that center.
@@ -920,4 +1038,3 @@ def process_junctions(
         "rewires": rewires,
         "skipped": skipped,
     }
-
