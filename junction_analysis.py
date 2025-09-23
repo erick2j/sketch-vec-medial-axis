@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum, auto
 from heapq import heappush, heappop
+from collections import defaultdict
 from typing import Dict, List, Tuple, Set, Iterable, Optional, Any
 
 import numpy as np
@@ -212,70 +213,6 @@ def point_in_convex(pt: np.ndarray, hull: np.ndarray, eps: float = 1e-9) -> bool
 # =============================================================================
 # 1) Grow branches with global edge ownership (prevents overgrowth overlap)
 # =============================================================================
-
-def _unique_next_neighbor(G: nx.Graph, prev: NodeId, curr: NodeId) -> Optional[NodeId]:
-    fwd = [n for n in G.neighbors(curr) if n != prev]
-    return fwd[0] if len(fwd) == 1 else None
-
-def grow_from_center(
-    G: nx.Graph,
-    center: NodeId,
-    angle_thresh: float,
-    edge_owner: Dict[Edge, NodeId],
-) -> GrownJunction:
-    """
-    Grow along degree-2 chains from a center (degree >= 3),
-    stopping on: junctions, forks, angle threshold, or globally owned edges.
-    """
-    branches: List[Path] = []
-
-    for nb in G.neighbors(center):
-        branch = [center]
-
-        e0 = ordered_edge(center, nb)
-        owner0 = edge_owner.get(e0)
-        if owner0 is not None and owner0 != center:
-            branches.append(Path(tuple(branch), BranchStopReason.EdgeOwnedByOther))
-            continue
-
-        # Claim the first edge out of the center before traversing further.
-        edge_owner[e0] = center
-
-        branch.append(nb)
-        prev, curr = center, nb
-
-        while True:
-            # Reached another junction → stop
-            if G.degree[curr] >= 3 and curr != center:
-                branches.append(Path(tuple(branch), BranchStopReason.ReachedJunction))
-                break
-
-            nxt = _unique_next_neighbor(G, prev, curr)
-            if nxt is None:
-                branches.append(Path(tuple(branch), BranchStopReason.Fork))
-                break
-
-            e = ordered_edge(curr, nxt)
-            owner = edge_owner.get(e)
-
-            if owner is None or owner == center:
-                # Claim and test angle
-                angle = float(G[curr][nxt].get("object angle", 0.0))  # NOTE: key includes a space
-                branch.append(nxt)
-                edge_owner[e] = center
-                if angle > angle_thresh:
-                    branches.append(Path(tuple(branch), BranchStopReason.AngleExceeded))
-                    break
-                prev, curr = curr, nxt
-                continue
-
-            # Someone else owns it → stop
-            branches.append(Path(tuple(branch), BranchStopReason.EdgeOwnedByOther))
-            break
-
-    nodes = frozenset(n for br in branches for n in br.nodes)
-    edges = frozenset(e for br in branches for e in br.edges())
-    return GrownJunction(center=center, branches=tuple(branches), nodes=nodes, edges=edges)
 
 def detect_grown_junctions(G: nx.Graph, angle_thresh: float) -> List[GrownJunction]:
     """Grow all junction centers in lockstep so no single center monopolizes edges."""
@@ -835,151 +772,199 @@ def rewire_general(
     colinear_dot: float,
 ) -> Optional[Dict[str, Any]]:
     """
-    General rewiring rule (connect pairs; project unmatched; split or snap):
-      1) Remove original subtree edges.
-      2) If there are colinear pairs (|dot| >= colinear_dot), connect each pair by an edge.
-      3) For unmatched leaves, cast inward tangent as a ray. If it hits any pair segment:
-         attach to the nearest valid hit (min t) and split that segment at the hit point.
-      4) If no hit:
-         - choose the pair segment whose *line* intersects the ray with smallest forward t,
-           snap to the endpoint closest to that line intersection point;
-         - if no forward line intersects, snap to endpoint with smallest distance to the ray.
-      5) If there were *no* colinear pairs at all, use the "no-colinear" rule instead.
+    Pair colinear leaves; if none exist, fan-in to the leaf centroid.
+    Otherwise, attach remaining leaves to the closest previously-added edge,
+    intersecting along that edge's infinite line and snapping to its endpoints
+    when necessary.
     """
     leaves = list(analysis.leaf_nodes)
     if len(leaves) < 2:
         return None
 
-    # Remove original edges in this subtree (we rebuild the junction locally)
-    removed = []
+    pairs = colinear_pair_matching(leaves, analysis.leaf_tangents, colinear_dot=colinear_dot)
+    if not pairs:
+        removed: List[Edge] = []
+        for (u, v) in list(analysis.edges):
+            if G.has_edge(u, v):
+                G.remove_edge(u, v)
+                removed.append((u, v))
+
+        leaf_positions = np.vstack([pos(G, leaf) for leaf in leaves])
+        centroid = leaf_positions.mean(axis=0)
+
+        center_node = new_node_id(G)
+        G.add_node(center_node)
+        set_pos(G, center_node, centroid)
+
+        added_edges = []
+        for leaf in leaves:
+            if not G.has_edge(leaf, center_node):
+                G.add_edge(leaf, center_node)
+            added_edges.append((leaf, center_node))
+
+        return {
+            "type": "General-rewire",
+            "subtree_index": analysis.subtree_index,
+            "removed_edges_original": removed,
+            "pairs": [],
+            "centroid_node": center_node,
+            "centroid_position": centroid,
+            "added_leaf_edges": added_edges,
+            "unmatched_leaves": leaves,
+            "splits_applied": {},
+            "ray_connections": [],
+        }
+
+    segments: Dict[Edge, Edge] = {}
+    segment_parent: Dict[Edge, Edge] = {}
+    splits_applied: Dict[Edge, List[float]] = defaultdict(list)
+
+    # Remove the original subtree structure – we will rebuild it to respect the
+    # pairing rule described above.
+    removed: List[Edge] = []
     for (u, v) in list(analysis.edges):
         if G.has_edge(u, v):
             G.remove_edge(u, v)
             removed.append((u, v))
 
-    # 1) Pairing step
-    pairs = colinear_pair_matching(leaves, analysis.leaf_tangents, colinear_dot=colinear_dot)
-    if not pairs:
-        # Fallback: no pairs → center-based rewiring
-        rep = rewire_no_colinear(G, analysis, colinear_dot=colinear_dot)
-        if rep is not None:
-            rep["removed_edges_original"] = removed
-            rep["paired_mode"] = False
-        return rep
+    def _register_segment(a: NodeId, b: NodeId, parent: Edge) -> Edge:
+        seg = ordered_edge(a, b)
+        segments[seg] = seg
+        segment_parent[seg] = parent
+        return seg
 
-    # Add edges for each pair
-    added_pair_edges: List[Edge] = []
-    for (u, v) in pairs:
-        if not G.has_edge(u, v):
-            G.add_edge(u, v)
-        added_pair_edges.append((u, v))
+    def _segment_param(parent: Edge, pt: np.ndarray) -> float:
+        a, b = parent
+        pa, pb = pos(G, a), pos(G, b)
+        d = pb - pa
+        denom = float(np.dot(d, d))
+        if denom <= 0.0:
+            return 0.0
+        s = float(np.dot(pt - pa, d) / denom)
+        return max(0.0, min(1.0, s))
 
-    matched = {n for uv in pairs for n in uv}
-    unmatched = [n for n in leaves if n not in matched]
-
-    # Collect current pair segments in canonical orientation
-    pair_segments = {(min(u, v), max(u, v)) for (u, v) in added_pair_edges}
-
-    # Unmatched leaves: intersect rays with pair segments
-    splits_by_segment: Dict[Edge, List[Tuple[float, np.ndarray]]] = {}
-    leaf_to_attach: Dict[NodeId, Tuple[Edge, float, np.ndarray]] = {}
-    snapped_leaf_edges: List[Edge] = []
-
-    for leaf in unmatched:
+    def _closest_line_hit(leaf: NodeId) -> Optional[Tuple[Edge, float, float, np.ndarray]]:
         p = pos(G, leaf)
-        uvec = unit(analysis.leaf_tangents[leaf])
-
-        # Try true segment intersections; keep closest (min t)
-        best_t, best_seg, best_s, best_point = float("inf"), None, None, None
-
-        for a, b in pair_segments:
-            pa, pb = pos(G, a), pos(G, b)
-            res = ray_segment_intersection_params(pa, pb, p, uvec, eps=_RAY_INTERSECT_EPS)
+        direction = unit(analysis.leaf_tangents[leaf])
+        best: Optional[Tuple[Edge, float, float, np.ndarray]] = None
+        for seg in list(segments.keys()):
+            u, v = seg
+            res = ray_line_intersection_params(pos(G, u), pos(G, v), p, direction, eps=_RAY_INTERSECT_EPS)
             if res is None:
                 continue
-            t, s, X = res
-            if t < best_t:
-                best_t, best_seg, best_s, best_point = t, (a, b), s, X
-
-        if best_seg is not None and best_t < float("inf"):
-            splits_by_segment.setdefault(best_seg, []).append((best_s, best_point))
-            leaf_to_attach[leaf] = (best_seg, best_s, best_point)
-            continue
-
-        # No segment hit → choose line with smallest forward t
-        best_t_line = float("inf")
-        best_line_seg = None
-        best_X_line = None
-
-        for a, b in pair_segments:
-            pa, pb = pos(G, a), pos(G, b)
-            res_line = ray_line_intersection_params(pa, pb, p, uvec, eps=_RAY_INTERSECT_EPS)
-            if res_line is None:
+            t, s, point = res
+            if t <= _RAY_INTERSECT_EPS:
                 continue
-            t_line, s_line, X_line = res_line
-            if t_line < best_t_line:
-                best_t_line = t_line
-                best_line_seg = (a, b)
-                best_X_line = X_line
+            if best is None or t < best[1]:
+                best = (seg, t, s, point)
+        return best
 
-        if best_line_seg is not None:
-            # Snap to the endpoint *closest to the line–ray intersection point*
-            a, b = best_line_seg
-            pa, pb = pos(G, a), pos(G, b)
-            target = a if np.linalg.norm(pa - best_X_line) <= np.linalg.norm(pb - best_X_line) else b
+    def _split_segment(seg: Edge, s: float, point: np.ndarray) -> NodeId:
+        parent = segment_parent.pop(seg)
+        segments.pop(seg, None)
+        u, v = seg
+        created = split_segment_edge(G, u, v, [(s, point)])
+        chain = [u] + created + [v]
+        for a, b in zip(chain, chain[1:]):
+            _register_segment(a, b, parent)
+        if created:
+            splits_applied[parent].append(_segment_param(parent, point))
+            return created[0]
+        # Degenerate split: fall back to the closer endpoint
+        return u if np.linalg.norm(point - pos(G, u)) <= np.linalg.norm(point - pos(G, v)) else v
+
+    def _attach_leaf(leaf: NodeId, seg: Edge, s: float, point: np.ndarray) -> Tuple[NodeId, float]:
+        if s <= _RAY_INTERSECT_EPS:
+            target = seg[0]
+        elif s >= 1.0 - _RAY_INTERSECT_EPS:
+            target = seg[1]
+        else:
+            target = _split_segment(seg, s, point)
+        if not G.has_edge(leaf, target):
             G.add_edge(leaf, target)
-            snapped_leaf_edges.append((leaf, target))
+        _register_segment(leaf, target, ordered_edge(leaf, target))
+        added_leaf_edges.append((leaf, target))
+        return target, float(np.linalg.norm(pos(G, leaf) - pos(G, target)))
+
+    # Step 1: connect every colinear pair.
+    added_pair_edges: List[Edge] = []
+
+    for u, v in pairs:
+        if not G.has_edge(u, v):
+            G.add_edge(u, v)
+        edge_key = ordered_edge(u, v)
+        added_pair_edges.append(edge_key)
+        _register_segment(u, v, edge_key)
+
+    matched = {n for uv in pairs for n in uv}
+    unmatched = [leaf for leaf in leaves if leaf not in matched]
+
+    # Step 2: cast rays for the remaining leaves.
+    added_leaf_edges: List[Edge] = []
+    ray_connections: List[Dict[str, Any]] = []
+
+    for leaf in unmatched:
+        hit = _closest_line_hit(leaf)
+        if hit is None:
+            ray_connections.append({"leaf": leaf, "attached": False})
+            continue
+        seg, t, s, point = hit
+        a, b = seg
+        pa, pb = pos(G, a), pos(G, b)
+        seg_vec = pb - pa
+        point_on_line = pa + float(s) * seg_vec
+
+        if -_RAY_INTERSECT_EPS <= s <= 1.0 + _RAY_INTERSECT_EPS:
+            s_clamped = float(min(max(s, 0.0), 1.0))
+            point_on_segment = pa + s_clamped * seg_vec
+            target, length = _attach_leaf(leaf, seg, s_clamped, point_on_segment)
+            ray_connections.append(
+                {
+                    "leaf": leaf,
+                    "attached": True,
+                    "target_node": target,
+                    "ray_t": float(t),
+                    "segment_hit": tuple(map(int, seg)),
+                    "hit_fraction": float(s_clamped),
+                    "edge_length": length,
+                    "attached_to_endpoint": bool(s_clamped <= _RAY_INTERSECT_EPS or s_clamped >= 1.0 - _RAY_INTERSECT_EPS),
+                }
+            )
             continue
 
-        # Still nothing: snap to endpoint with smallest distance to the ray
-        best_dist, best_endpoint = float("inf"), None
-        for a, b in pair_segments:
-            pa, pb = pos(G, a), pos(G, b)
-            _, dA = point_to_ray_distance(p, uvec, pa)
-            _, dB = point_to_ray_distance(p, uvec, pb)
-            if dA < best_dist:
-                best_dist, best_endpoint = dA, a
-            if dB < best_dist:
-                best_dist, best_endpoint = dB, b
-
-        if best_endpoint is not None:
-            G.add_edge(leaf, best_endpoint)
-            snapped_leaf_edges.append((leaf, best_endpoint))
-        # else: pathological — leave unattached
-
-    # Apply splits, creating nodes at intersection points
-    split_node_at: Dict[Tuple[Edge, float], NodeId] = {}
-    for seg, splits in splits_by_segment.items():
-        a, b = seg
-        created = split_segment_edge(G, a, b, splits)
-        for (s, _pt), nid in zip(sorted(splits, key=lambda x: x[0]), created):
-            split_node_at[(seg, s)] = nid
-
-    # Connect leaves to the split nodes
-    added_leaf_edges: List[Edge] = []
-    for leaf, (seg, s, pt) in leaf_to_attach.items():
-        nid = split_node_at.get((seg, s))
-        if nid is None:  # numeric fallback
-            nid = new_node_id(G)
-            G.add_node(nid)
-            set_pos(G, nid, pt)
-        G.add_edge(leaf, nid)
-        added_leaf_edges.append((leaf, nid))
+        # Intersection lies outside the finite segment; snap to the closest endpoint.
+        dist_a = float(np.linalg.norm(point_on_line - pa))
+        dist_b = float(np.linalg.norm(point_on_line - pb))
+        target = a if dist_a <= dist_b else b
+        if not G.has_edge(leaf, target):
+            G.add_edge(leaf, target)
+        _register_segment(leaf, target, ordered_edge(leaf, target))
+        added_leaf_edges.append((leaf, target))
+        length = float(np.linalg.norm(pos(G, leaf) - pos(G, target)))
+        hit_fraction = 0.0 if target == a else 1.0
+        ray_connections.append(
+            {
+                "leaf": leaf,
+                "attached": True,
+                "target_node": target,
+                "ray_t": float(t),
+                "segment_hit": tuple(map(int, seg)),
+                "hit_fraction": hit_fraction,
+                "edge_length": length,
+                "attached_to_endpoint": True,
+            }
+        )
 
     return {
         "type": "General-rewire",
         "subtree_index": analysis.subtree_index,
         "removed_edges_original": removed,
-        "paired_mode": True,
         "pairs": list(pairs),
+        "added_pair_edges": added_pair_edges,
         "unmatched_leaves": unmatched,
-        "pair_segments": list(pair_segments),
-        "splits_applied": {
-            tuple(map(int, seg)): [float(s) for (s, _pt) in sorted(splits_by_segment.get(seg, []), key=lambda x: x[0])]
-            for seg in splits_by_segment.keys()
-        },
+        "splits_applied": {tuple(map(int, k)): [float(x) for x in v] for k, v in splits_applied.items()},
         "added_leaf_edges": added_leaf_edges,
-        "snapped_leaf_edges": snapped_leaf_edges,
+        "ray_connections": ray_connections,
     }
 
 
@@ -1003,11 +988,13 @@ def process_junctions(
          shared nodes, then bridge the cluster into a connected subtree.
       3) Analyze each subtree (leaves, two-edge inward tangents, CCW order).
       4) Rewire:
-         - If ≥1 colinear pair: connect disjoint pairs by straight edges.
-           For remaining leaves, project rays; attach to the closest hit on
-           any pair segment (splitting as needed). No hit → snap per rules.
-         - Else: average ray–ray intersections, snap to hull if needed,
-           and connect all leaves to that center.
+         - If no colinear pairs exist, create a centroid node for all leaves
+           and connect each leaf directly to it.
+         - Otherwise connect every colinear leaf pair, then for the remaining
+           leaves cast inward rays and attach to the closest intersection with
+           any edge added so far (snapping to endpoints when the hit falls
+           outside the finite segment). Leaves whose rays miss every edge
+           remain unconnected.
 
     Returns a report dictionary with intermediate artifacts and rewiring actions.
     """
