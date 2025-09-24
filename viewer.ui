@@ -276,29 +276,44 @@
              </sizepolicy>
             </property>
             <property name="maximum">
-             <number>1000</number>
+             <number>8</number>
             </property>
             <property name="value">
-             <number>1000</number>
+             <number>8</number>
             </property>
             <property name="sliderPosition">
-             <number>1000</number>
+             <number>8</number>
             </property>
             <property name="orientation">
              <enum>Qt::Horizontal</enum>
+            </property>
+            <property name="tickPosition">
+             <enum>QSlider::TicksBelow</enum>
+            </property>
+            <property name="tickInterval">
+             <number>1</number>
             </property>
            </widget>
           </item>
           <item row="7" column="0">
            <widget class="QSlider" name="junction_object_angle_slider">
             <property name="maximum">
-             <number>1000</number>
+             <number>8</number>
+            </property>
+            <property name="value">
+             <number>8</number>
             </property>
             <property name="sliderPosition">
-             <number>950</number>
+             <number>8</number>
             </property>
             <property name="orientation">
              <enum>Qt::Horizontal</enum>
+            </property>
+            <property name="tickPosition">
+             <enum>QSlider::TicksBelow</enum>
+            </property>
+            <property name="tickInterval">
+             <number>1</number>
             </property>
            </widget>
           </item>

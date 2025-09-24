@@ -29,8 +29,10 @@ MAX_STROKE_WIDTH = 20
 MIN_ISO_SCALE = 0.0
 MAX_ISO_SCALE = 1.0
 DEFAULT_ISO_SCALE = 0.2
+DEFAULT_OBJECT_ANGLE = 7.0 * np.pi / 16.0
+DEFAULT_JUNCTION_OBJECT_ANGLE = 6.0 * np.pi / 16.0
 MIN_OBJECT_ANGLE = 0
-MAX_OBJECT_ANGLE = np.pi / 2.0
+MAX_OBJECT_ANGLE = np.pi /2.0
 
 class MainWindow(QMainWindow):
     def __init__(self, parent=None):
@@ -55,9 +57,12 @@ class MainWindow(QMainWindow):
         self.iso_scale = float(self.get_iso_scale())
         self.ui.isovalue_display.display(self.iso_scale)
         self.stroke_width = float(self.get_stroke_width())
+        self.ui.stroke_width_display.display(self.stroke_width)
         self.isovalue = 0.0
         self.object_angle = float(self.get_object_angle())
+        self.ui.object_angle_display.display(self.object_angle)
         self.junction_object_angle = float(self.get_junction_object_angle())
+        self.ui.junction_object_angle_display.display(self.junction_object_angle)
 
         self.voronoi_diagram = None
 
@@ -122,12 +127,21 @@ class MainWindow(QMainWindow):
         pass
 
     def _initialize_slider_defaults(self):
-        slider = self.ui.isovalue_slider
+        self._set_slider_default(self.ui.isovalue_slider, DEFAULT_ISO_SCALE)
+        self._set_slider_default(self.ui.object_angle_slider, DEFAULT_OBJECT_ANGLE, MIN_OBJECT_ANGLE, MAX_OBJECT_ANGLE)
+        self._set_slider_default(self.ui.junction_object_angle_slider, DEFAULT_JUNCTION_OBJECT_ANGLE, MIN_OBJECT_ANGLE, MAX_OBJECT_ANGLE)
+
+    def _set_slider_default(self, slider, value, min_val=0.0, max_val=1.0):
         if slider is None:
             return
 
         slider_max = slider.maximum() or 1
-        default_pos = int(round(DEFAULT_ISO_SCALE * slider_max))
+        if max_val > min_val:
+            ratio = (value - min_val) / (max_val - min_val)
+        else:
+            ratio = 0.0
+
+        default_pos = int(round(np.clip(ratio, 0.0, 1.0) * slider_max))
         was_blocked = slider.blockSignals(True)
         slider.setValue(default_pos)
         slider.blockSignals(was_blocked)

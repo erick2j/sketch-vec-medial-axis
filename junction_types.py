@@ -26,7 +26,7 @@ class StrokeGraph:
     """
 
     def __init__(self, measure: np.ndarray, stroke_width: float = 2.0, iso_scale: float = 0.2,
-                 pruning_object_angle: float = np.pi / 2.0, junction_object_angle: float = np.pi / 2.1):
+                 pruning_object_angle: float = 5 * np.pi / 6.0, junction_object_angle: float = 2 * np.pi / 6.0):
         self.image_measure = measure
 
         self.stroke_width = float(stroke_width)

@@ -184,18 +184,23 @@ class Ui_MainWindow(object):
         sizePolicy9.setVerticalStretch(0)
         sizePolicy9.setHeightForWidth(self.object_angle_slider.sizePolicy().hasHeightForWidth())
         self.object_angle_slider.setSizePolicy(sizePolicy9)
-        self.object_angle_slider.setMaximum(1000)
-        self.object_angle_slider.setValue(1000)
-        self.object_angle_slider.setSliderPosition(1000)
+        self.object_angle_slider.setMaximum(8)
+        self.object_angle_slider.setValue(8)
+        self.object_angle_slider.setSliderPosition(8)
         self.object_angle_slider.setOrientation(Qt.Horizontal)
+        self.object_angle_slider.setTickPosition(QSlider.TicksBelow)
+        self.object_angle_slider.setTickInterval(1)
 
         self.gridLayout_2.addWidget(self.object_angle_slider, 5, 0, 1, 1)
 
         self.junction_object_angle_slider = QSlider(self.sliders_groupbox)
         self.junction_object_angle_slider.setObjectName(u"junction_object_angle_slider")
-        self.junction_object_angle_slider.setMaximum(1000)
-        self.junction_object_angle_slider.setSliderPosition(950)
+        self.junction_object_angle_slider.setMaximum(8)
+        self.junction_object_angle_slider.setValue(8)
+        self.junction_object_angle_slider.setSliderPosition(8)
         self.junction_object_angle_slider.setOrientation(Qt.Horizontal)
+        self.junction_object_angle_slider.setTickPosition(QSlider.TicksBelow)
+        self.junction_object_angle_slider.setTickInterval(1)
 
         self.gridLayout_2.addWidget(self.junction_object_angle_slider, 7, 0, 1, 1)
 
