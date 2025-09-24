@@ -24,18 +24,20 @@ logger = logging.getLogger(__name__)
 #     pyside2-uic viewer.ui -o ui_viewer.py
 #################################################################
 
-MIN_STROKE_WIDTH = 1 
-MAX_STROKE_WIDTH = 20 
-MIN_ISO_VALUE = 0 
-MAX_ISO_VALUE = 100 
-MIN_OBJECT_ANGLE = 0 
-MAX_OBJECT_ANGLE = np.pi/2.0
+MIN_STROKE_WIDTH = 1
+MAX_STROKE_WIDTH = 20
+MIN_ISO_SCALE = 0.0
+MAX_ISO_SCALE = 1.0
+DEFAULT_ISO_SCALE = 0.2
+MIN_OBJECT_ANGLE = 0
+MAX_OBJECT_ANGLE = np.pi / 2.0
 
 class MainWindow(QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
+        self._initialize_slider_defaults()
         self.connect()
         
         self.base_image = None
@@ -50,6 +52,8 @@ class MainWindow(QMainWindow):
         self.subtrees = tuple()
         self.analyses = tuple()
 
+        self.iso_scale = float(self.get_iso_scale())
+        self.ui.isovalue_display.display(self.iso_scale)
         self.stroke_width = float(self.get_stroke_width())
         self.isovalue = 0.0
         self.object_angle = float(self.get_object_angle())
@@ -117,6 +121,17 @@ class MainWindow(QMainWindow):
         '''
         pass
 
+    def _initialize_slider_defaults(self):
+        slider = self.ui.isovalue_slider
+        if slider is None:
+            return
+
+        slider_max = slider.maximum() or 1
+        default_pos = int(round(DEFAULT_ISO_SCALE * slider_max))
+        was_blocked = slider.blockSignals(True)
+        slider.setValue(default_pos)
+        slider.blockSignals(was_blocked)
+
 
     def _set_slider_from_value(self, slider, value, min_val, max_val):
         if slider is None:
@@ -153,20 +168,12 @@ class MainWindow(QMainWindow):
         self.subtrees = model.junction_subtrees
         self.analyses = model.junction_analyses
 
-    def _update_slider_ranges(self):
-        if self.distance_function is None:
-            return
-
-        global MIN_ISO_VALUE, MAX_ISO_VALUE
-        MIN_ISO_VALUE = float(np.min(self.distance_function))
-        MAX_ISO_VALUE = float(np.max(self.distance_function))
-
     def _sync_slider_positions(self):
         self.ui.stroke_width_display.display(self.stroke_width)
         self._set_slider_from_value(self.ui.stroke_width_slider, self.stroke_width, MIN_STROKE_WIDTH, MAX_STROKE_WIDTH)
 
-        self.ui.isovalue_display.display(self.isovalue)
-        self._set_slider_from_value(self.ui.isovalue_slider, self.isovalue, MIN_ISO_VALUE, MAX_ISO_VALUE)
+        self.ui.isovalue_display.display(self.iso_scale)
+        self._set_slider_from_value(self.ui.isovalue_slider, self.iso_scale, MIN_ISO_SCALE, MAX_ISO_SCALE)
 
         self.ui.object_angle_display.display(self.object_angle)
         self._set_slider_from_value(self.ui.object_angle_slider, self.object_angle, MIN_OBJECT_ANGLE, MAX_OBJECT_ANGLE)
@@ -194,12 +201,12 @@ class MainWindow(QMainWindow):
             return
 
         self.stroke_width = float(self.stroke_graph_model.stroke_width)
+        self.iso_scale = float(self.stroke_graph_model.iso_scale)
         self.object_angle = float(self.stroke_graph_model.object_angle_pruning_threshold)
         self.junction_object_angle = float(self.stroke_graph_model.object_angle_junction_threshold)
         self.isovalue = float(self.stroke_graph_model.isovalue)
 
         self._sync_from_model()
-        self._update_slider_ranges()
         self._sync_slider_positions()
         self._refresh_views()
 
@@ -208,32 +215,17 @@ class MainWindow(QMainWindow):
             return
 
         self.stroke_width = float(self.get_stroke_width())
+        self.iso_scale = float(self.get_iso_scale())
         self.object_angle = float(self.get_object_angle())
         self.junction_object_angle = float(self.get_junction_object_angle())
 
         self.stroke_graph_model = StrokeGraph(
             self.image_measure,
             stroke_width=self.stroke_width,
+            iso_scale=self.iso_scale,
             pruning_object_angle=self.object_angle,
             junction_object_angle=self.junction_object_angle,
         )
-
-        try:
-            distance_field = self.stroke_graph_model.distance_function
-        except ValueError:
-            self._post_model_update()
-            return
-
-        dmin = float(np.min(distance_field))
-        dmax = float(np.max(distance_field))
-        iso_request = float(self.get_distance_iso_value())
-        clamped_iso = float(np.clip(iso_request, dmin, dmax))
-
-        try:
-            self.stroke_graph_model.update_distance_threshold(clamped_iso)
-        except ValueError:
-            pass
-
         self._post_model_update()
 
 
@@ -277,8 +269,8 @@ class MainWindow(QMainWindow):
         '''
         Updates ON MOVE the isovalue slider + display
         '''
-        self.isovalue = self.get_distance_iso_value()
-        self.ui.isovalue_display.display(self.isovalue)
+        self.iso_scale = self.get_iso_scale()
+        self.ui.isovalue_display.display(self.iso_scale)
 
     def update_on_move_object_angle(self):
         '''
@@ -313,9 +305,9 @@ class MainWindow(QMainWindow):
         if self.stroke_graph_model is None:
             return
 
-        self.isovalue = float(self.get_distance_iso_value())
-        self.ui.isovalue_display.display(self.isovalue)
-        self.stroke_graph_model.update_distance_threshold(self.isovalue)
+        self.iso_scale = float(self.get_iso_scale())
+        self.ui.isovalue_display.display(self.iso_scale)
+        self.stroke_graph_model.update_iso_scale(self.iso_scale)
         self._post_model_update()
 
     def update_on_release_object_angle(self):
@@ -421,7 +413,6 @@ class MainWindow(QMainWindow):
             self.ui.mpl_widget.hide_medial_axis_object_angles()
 
     def toggle_medial_axis_junctions(self):
-        '''
         if (
             self.ui.junctions_checkbox.isChecked()
             and self.stroke_graph is not None
@@ -429,15 +420,18 @@ class MainWindow(QMainWindow):
             and self.analyses
         ):
             self.ui.mpl_widget.plot_junction_subtrees(self.stroke_graph, self.subtrees)
-            self.ui.mpl_widget.plot_subtree_leaf_tangents(self.stroke_graph, self.analyses, length=14.0, color='black', linewidth=1.2)
+            self.ui.mpl_widget.plot_subtree_leaf_tangents(
+                self.stroke_graph,
+                self.analyses,
+                length=14.0,
+                color='black',
+                linewidth=1.2,
+            )
             self.ui.mpl_widget.plot_leaf_order_labels(self.stroke_graph, self.analyses)
         else:
             self.ui.mpl_widget.hide_junction_subtrees()
             self.ui.mpl_widget.hide_subtree_leaf_tangents()
             self.ui.mpl_widget.hide_leaf_order_labels()
-            #self.ui.mpl_widget.hide_medial_axis_junctions()
-        '''
-        pass
 
 
     ### Getters for sliders
@@ -445,9 +439,10 @@ class MainWindow(QMainWindow):
         step = (MAX_STROKE_WIDTH - MIN_STROKE_WIDTH) / self.ui.stroke_width_slider.maximum()
         return float(MIN_STROKE_WIDTH + self.ui.stroke_width_slider.value() * step)
         
-    def get_distance_iso_value(self):
-        step = (MAX_ISO_VALUE - MIN_ISO_VALUE) / self.ui.isovalue_slider.maximum() 
-        return float(MIN_ISO_VALUE + self.ui.isovalue_slider.value() * step)
+    def get_iso_scale(self):
+        slider_max = self.ui.isovalue_slider.maximum() or 1
+        step = (MAX_ISO_SCALE - MIN_ISO_SCALE) / slider_max
+        return float(MIN_ISO_SCALE + self.ui.isovalue_slider.value() * step)
         
     def get_object_angle(self):
         step = (MAX_OBJECT_ANGLE - MIN_OBJECT_ANGLE) / self.ui.object_angle_slider.maximum() 
