@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Callable, Iterable, Tuple
+from typing import Any, Callable, Iterable, Tuple
 
 import numpy as np
 import networkx as nx
@@ -12,6 +12,7 @@ from curve_extraction import (
     resample_contours,
     unique_contour_points,
 )
+from junction_analysis import process_junctions
 from image_processing import find_contours
 
 NodeId = int
@@ -41,7 +42,12 @@ class StrokeGraph:
         self.boundary_points: np.ndarray | None = None
 
         self.medial_axis: nx.Graph | None = None
+        self.pruned_graph: nx.Graph | None = None
         self.stroke_graph: nx.Graph | None = None
+
+        self.junction_report: dict[str, Any] | None = None
+        self.junction_subtrees: tuple = tuple()
+        self.junction_analyses: tuple = tuple()
 
         self._run_pipeline_from("distance")
 
@@ -111,7 +117,7 @@ class StrokeGraph:
         if np.isclose(val, self.object_angle_pruning_threshold):
             return
         self.object_angle_pruning_threshold = float(val)
-        self._run_pipeline_from("stroke_graph")
+        self._run_pipeline_from("pruned_graph")
 
     def update_junction_threshold(self, val: float) -> None:
         if np.isclose(val, self.object_angle_junction_threshold):
@@ -145,6 +151,7 @@ class StrokeGraph:
             ("boundary", self._compute_boundary_contours),
             ("medial_axis", self._compute_medial_axis),
             ("object_angles", self._compute_medial_object_angles),
+            ("pruned_graph", self._compute_pruned_graph),
             ("stroke_graph", self._compute_stroke_graph),
         )
 
@@ -193,15 +200,32 @@ class StrokeGraph:
 
         compute_object_angles(self.medial_axis, self.boundary_points)
 
-    def _compute_stroke_graph(self) -> None:
+    def _compute_pruned_graph(self) -> None:
         if self.medial_axis is None:
-            self.stroke_graph = nx.Graph()
+            self.pruned_graph = nx.Graph()
             return
 
-        # Junction repair can be incorporated here once implemented by using
-        # self.object_angle_junction_threshold before the pruning step.
-        self.stroke_graph = prune_by_object_angle(
+        self.pruned_graph = prune_by_object_angle(
             self.medial_axis,
             self.object_angle_pruning_threshold,
         )
 
+    def _compute_stroke_graph(self) -> None:
+        if self.pruned_graph is None or self.pruned_graph.number_of_nodes() == 0:
+            self.stroke_graph = nx.Graph()
+            self.junction_report = None
+            self.junction_subtrees = tuple()
+            self.junction_analyses = tuple()
+            return
+
+        graph = self.pruned_graph.copy()
+        stroke_graph, report = process_junctions(
+            graph,
+            self.object_angle_junction_threshold,
+            self.stroke_width,
+        )
+
+        self.stroke_graph = stroke_graph
+        self.junction_report = report
+        self.junction_subtrees = tuple(report.get("subtrees", tuple()))
+        self.junction_analyses = tuple(report.get("analyses", tuple()))

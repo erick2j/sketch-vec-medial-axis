@@ -1,14 +1,15 @@
-import os 
+import os
 import sys
 import logging
+
+import cv2
+import numpy as np
 from PySide6.QtWidgets import QApplication, QMainWindow, QFileDialog
+
 from ui_viewer import Ui_MainWindow
-from image_processing import *
-from distance_to_measure import *
-from curve_extraction import *
-from vector_utils import *
-#from junction_clean_up_working import *
-from junction_analysis import *
+from image_processing import normalize_to_measure, process_image
+from vector_utils import export_contours_to_svg
+from junction_types import StrokeGraph
 
 logging.basicConfig(
         level=logging.INFO,
@@ -39,15 +40,22 @@ class MainWindow(QMainWindow):
         
         self.base_image = None
         self.image_measure = None
+        self.stroke_graph_model: StrokeGraph | None = None
+
         self.distance_function = None
-        self.stroke_width = 1 
-        self.isovalue = 0.0
-        self.object_angle = 0.0
-        self.junction_object_angle = 0.0
         self.boundary_contours = None
         self.medial_axis = None
         self.pruned_medial_axis = None
         self.stroke_graph = None
+        self.subtrees = tuple()
+        self.analyses = tuple()
+
+        self.stroke_width = float(self.get_stroke_width())
+        self.isovalue = 0.0
+        self.object_angle = float(self.get_object_angle())
+        self.junction_object_angle = float(self.get_junction_object_angle())
+
+        self.voronoi_diagram = None
 
         
 
@@ -109,6 +117,124 @@ class MainWindow(QMainWindow):
         '''
         pass
 
+
+    def _set_slider_from_value(self, slider, value, min_val, max_val):
+        if slider is None:
+            return
+
+        slider_max = slider.maximum() or 1
+        if max_val > min_val:
+            ratio = (value - min_val) / (max_val - min_val)
+        else:
+            ratio = 0.0
+
+        pos = int(round(np.clip(ratio, 0.0, 1.0) * slider_max))
+        was_blocked = slider.blockSignals(True)
+        slider.setValue(pos)
+        slider.blockSignals(was_blocked)
+
+    def _sync_from_model(self):
+        model = self.stroke_graph_model
+        if model is None:
+            self.distance_function = None
+            self.boundary_contours = None
+            self.medial_axis = None
+            self.pruned_medial_axis = None
+            self.stroke_graph = None
+            self.subtrees = tuple()
+            self.analyses = tuple()
+            return
+
+        self.distance_function = model.distance_function
+        self.boundary_contours = model.boundary_contours
+        self.medial_axis = model.medial_axis
+        self.pruned_medial_axis = model.pruned_graph
+        self.stroke_graph = model.stroke_graph
+        self.subtrees = model.junction_subtrees
+        self.analyses = model.junction_analyses
+
+    def _update_slider_ranges(self):
+        if self.distance_function is None:
+            return
+
+        global MIN_ISO_VALUE, MAX_ISO_VALUE
+        MIN_ISO_VALUE = float(np.min(self.distance_function))
+        MAX_ISO_VALUE = float(np.max(self.distance_function))
+
+    def _sync_slider_positions(self):
+        self.ui.stroke_width_display.display(self.stroke_width)
+        self._set_slider_from_value(self.ui.stroke_width_slider, self.stroke_width, MIN_STROKE_WIDTH, MAX_STROKE_WIDTH)
+
+        self.ui.isovalue_display.display(self.isovalue)
+        self._set_slider_from_value(self.ui.isovalue_slider, self.isovalue, MIN_ISO_VALUE, MAX_ISO_VALUE)
+
+        self.ui.object_angle_display.display(self.object_angle)
+        self._set_slider_from_value(self.ui.object_angle_slider, self.object_angle, MIN_OBJECT_ANGLE, MAX_OBJECT_ANGLE)
+
+        self.ui.junction_object_angle_display.display(self.junction_object_angle)
+        self._set_slider_from_value(self.ui.junction_object_angle_slider, self.junction_object_angle, MIN_OBJECT_ANGLE, MAX_OBJECT_ANGLE)
+
+    def _refresh_views(self):
+        if self.ui.original_image_radiobutton.isChecked():
+            self.toggle_original_image()
+        elif self.ui.distance_radiobutton.isChecked():
+            self.toggle_distance_function()
+        elif self.ui.clean_canvas_radiobutton.isChecked():
+            self.toggle_clean_canvas()
+
+        self.toggle_boundary()
+        self.toggle_medial_axis()
+        self.toggle_medial_axis_object_angles()
+        self.toggle_medial_axis_junctions()
+
+    def _post_model_update(self):
+        if self.stroke_graph_model is None:
+            self._sync_from_model()
+            self._refresh_views()
+            return
+
+        self.stroke_width = float(self.stroke_graph_model.stroke_width)
+        self.object_angle = float(self.stroke_graph_model.object_angle_pruning_threshold)
+        self.junction_object_angle = float(self.stroke_graph_model.object_angle_junction_threshold)
+        self.isovalue = float(self.stroke_graph_model.isovalue)
+
+        self._sync_from_model()
+        self._update_slider_ranges()
+        self._sync_slider_positions()
+        self._refresh_views()
+
+    def _rebuild_stroke_graph(self):
+        if self.image_measure is None:
+            return
+
+        self.stroke_width = float(self.get_stroke_width())
+        self.object_angle = float(self.get_object_angle())
+        self.junction_object_angle = float(self.get_junction_object_angle())
+
+        self.stroke_graph_model = StrokeGraph(
+            self.image_measure,
+            stroke_width=self.stroke_width,
+            pruning_object_angle=self.object_angle,
+            junction_object_angle=self.junction_object_angle,
+        )
+
+        try:
+            distance_field = self.stroke_graph_model.distance_function
+        except ValueError:
+            self._post_model_update()
+            return
+
+        dmin = float(np.min(distance_field))
+        dmax = float(np.max(distance_field))
+        iso_request = float(self.get_distance_iso_value())
+        clamped_iso = float(np.clip(iso_request, dmin, dmax))
+
+        try:
+            self.stroke_graph_model.update_distance_threshold(clamped_iso)
+        except ValueError:
+            pass
+
+        self._post_model_update()
 
 
     def load_image_from_file(self):
@@ -172,63 +298,49 @@ class MainWindow(QMainWindow):
         '''
         Performs relevant computation ON RELEASE of isovalue slider
         '''
-        global MIN_ISO_VALUE, MAX_ISO_VALUE
-        if self.image_measure is not None:
-            self.stroke_width = self.get_stroke_width()
-            self.ui.stroke_width_display.display(self.stroke_width)
-            self.distance_function, _ = distance_to_measure_roi_sparse_cpu_numba(self.image_measure, 0.5*self.stroke_width)
-            MAX_ISO_VALUE = np.max(self.distance_function)
-            MIN_ISO_VALUE = np.min(self.distance_function)
-            self.toggle_distance_function()
+        if self.stroke_graph_model is None:
+            return
+
+        self.stroke_width = float(self.get_stroke_width())
+        self.ui.stroke_width_display.display(self.stroke_width)
+        self.stroke_graph_model.update_stroke_width(self.stroke_width)
+        self._post_model_update()
 
     def update_on_release_iso_value(self):
         '''
         Performs relevant computation ON RELEASE of isovalue slider
         '''
-        if self.distance_function is None:
-            return 
+        if self.stroke_graph_model is None:
+            return
 
-        self.boundary_contours = find_contours(self.distance_function, self.isovalue, fully_connected='high')
-        self.boundary_contours = resample_contours(self.boundary_contours, 0.5, 1e-5)
-        self.toggle_boundary()
-        self.voronoi_diagram = fast_voronoi_diagram(unique_contour_points(self.boundary_contours))
-        self.medial_axis = fast_medial_axis(self.boundary_contours, self.distance_function, self.isovalue)
-        #self.medial_axis = slow_medial_axis(self.boundary_contours)
-        compute_object_angles(self.medial_axis, unique_contour_points(self.boundary_contours)) 
-        self.pruned_medial_axis = prune_by_object_angle(self.medial_axis, self.object_angle)
-        self.stroke_graph, result = process_junctions(self.pruned_medial_axis, self.junction_object_angle, self.stroke_width)
-        self.subtrees = result["subtrees"]
-        self.analyses = result["analyses"]
-
-        self.toggle_medial_axis_object_angles()
+        self.isovalue = float(self.get_distance_iso_value())
+        self.ui.isovalue_display.display(self.isovalue)
+        self.stroke_graph_model.update_distance_threshold(self.isovalue)
+        self._post_model_update()
 
     def update_on_release_object_angle(self):
         '''
         Performs relevant computation ON RELEASE of isovalue slider
         '''
-        if self.medial_axis is None:
+        if self.stroke_graph_model is None:
             return
 
-        self.pruned_medial_axis = prune_by_object_angle(self.medial_axis, self.object_angle)
-        self.stroke_graph, result = process_junctions(self.pruned_medial_axis, self.junction_object_angle, self.stroke_width)
-        self.subtrees = result["subtrees"]
-        self.analyses = result["analyses"]
-
-        self.toggle_medial_axis_object_angles()
+        self.object_angle = float(self.get_object_angle())
+        self.ui.object_angle_display.display(self.object_angle)
+        self.stroke_graph_model.update_pruning_threshold(self.object_angle)
+        self._post_model_update()
 
     def update_on_release_junction_object_angle(self):
         '''
         Performs relevant computation ON RELEASE of isovalue slider
         '''
-        if self.medial_axis is None:
+        if self.stroke_graph_model is None:
             return
 
-        self.stroke_graph, result = process_junctions(self.pruned_medial_axis, self.junction_object_angle, self.stroke_width)
-        self.subtrees = result["subtrees"]
-        self.analyses = result["analyses"]
-
-        self.toggle_medial_axis_object_angles()
-        self.toggle_medial_axis_junctions()
+        self.junction_object_angle = float(self.get_junction_object_angle())
+        self.ui.junction_object_angle_display.display(self.junction_object_angle)
+        self.stroke_graph_model.update_junction_threshold(self.junction_object_angle)
+        self._post_model_update()
         
     def compute_image_measure(self):
         """
@@ -237,6 +349,9 @@ class MainWindow(QMainWindow):
           - Upsampling combobox
         Then update the display.
         """
+        if self.base_image is None:
+            return
+
         img = self.base_image
 
         # optional gaussian blur
@@ -261,17 +376,15 @@ class MainWindow(QMainWindow):
 
         # 3) Normalize and show
         self.image_measure = normalize_to_measure(img)
-        self.toggle_original_image()
+        self._rebuild_stroke_graph()
 
     def export_contour_svg(self):
-        if self.boundary_contours is not None:
-            self.boundary_contours = find_contours(self.distance_function, self.isovalue, fully_connected='high')
-            self.boundary_contours = resample_contours(self.boundary_contours, 0.5, 1e-5)
+        if self.boundary_contours:
             export_contours_to_svg(self.boundary_contours, "output.svg")
 
     ### Toggle Functions
     def toggle_original_image(self):
-        if self.ui.original_image_radiobutton.isChecked():
+        if self.ui.original_image_radiobutton.isChecked() and self.image_measure is not None:
             self.ui.mpl_widget.show_image(self.image_measure, cmap='gray')
 
     def toggle_clean_canvas(self):
@@ -279,11 +392,11 @@ class MainWindow(QMainWindow):
             self.ui.mpl_widget.show_blank_image()
 
     def toggle_distance_function(self):
-        if self.ui.distance_radiobutton.isChecked():
+        if self.ui.distance_radiobutton.isChecked() and self.distance_function is not None:
             self.ui.mpl_widget.show_image(self.distance_function, normalize=False)
 
     def toggle_boundary(self):
-        if self.ui.level_set_contour_checkbox.isChecked() and self.boundary_contours is not None:
+        if self.ui.level_set_contour_checkbox.isChecked() and self.boundary_contours:
             self.ui.mpl_widget.plot_contours(self.boundary_contours)
         else:
             self.ui.mpl_widget.hide_levelset_contours()
@@ -308,17 +421,23 @@ class MainWindow(QMainWindow):
             self.ui.mpl_widget.hide_medial_axis_object_angles()
 
     def toggle_medial_axis_junctions(self):
-        if self.ui.junctions_checkbox.isChecked() and self.stroke_graph is not None:
+        '''
+        if (
+            self.ui.junctions_checkbox.isChecked()
+            and self.stroke_graph is not None
+            and self.subtrees
+            and self.analyses
+        ):
             self.ui.mpl_widget.plot_junction_subtrees(self.stroke_graph, self.subtrees)
             self.ui.mpl_widget.plot_subtree_leaf_tangents(self.stroke_graph, self.analyses, length=14.0, color='black', linewidth=1.2)
             self.ui.mpl_widget.plot_leaf_order_labels(self.stroke_graph, self.analyses)
-
-            #self.ui.mpl_widget.plot_medial_axis_junctions(self.stroke_graph, self.junctions)
         else:
             self.ui.mpl_widget.hide_junction_subtrees()
             self.ui.mpl_widget.hide_subtree_leaf_tangents()
             self.ui.mpl_widget.hide_leaf_order_labels()
             #self.ui.mpl_widget.hide_medial_axis_junctions()
+        '''
+        pass
 
 
     ### Getters for sliders
