@@ -276,7 +276,7 @@
              </sizepolicy>
             </property>
             <property name="maximum">
-             <number>8</number>
+             <number>16</number>
             </property>
             <property name="value">
              <number>8</number>
@@ -298,7 +298,7 @@
           <item row="7" column="0">
            <widget class="QSlider" name="junction_object_angle_slider">
             <property name="maximum">
-             <number>8</number>
+             <number>16</number>
             </property>
             <property name="value">
              <number>8</number>
