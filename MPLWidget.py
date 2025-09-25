@@ -215,24 +215,28 @@ class MPLWidget(QtWidgets.QWidget):
 
         self.hide_medial_axis()
 
-        # Extract node positions into array (sorted by node index for consistency)
-        node_ids = sorted(graph.nodes)
-        id_to_index = {node: i for i, node in enumerate(node_ids)}
-        positions = np.array([graph.nodes[n]['position'] for n in node_ids])  # shape (N, 2)
+        # Gather node positions
+        positions = {
+            node: np.asarray(graph.nodes[node]['position'], dtype=float)
+            for node in graph.nodes
+        }
 
-        # Build edge list in index form and convert (row, col) → (x, y)
-        edge_array = np.array([
-            [id_to_index[u], id_to_index[v]] for u, v in graph.edges
-        ])
-        segments = positions[edge_array]  # shape (E, 2, 2)
-        segments = segments[:, :, ::-1]   # convert to (x, y) for display
+        # Build segments and stroke-aware colors
+        segments = []
+        colors = []
+        for u, v in graph.edges:
+            pu = positions[u][::-1]
+            pv = positions[v][::-1]
+            segments.append(np.vstack((pu, pv)))
+            colors.append(graph.edges[u, v].get('stroke_color', color))
 
         # Plot edges
-        lines = LineCollection(segments, colors=color, linewidths=linewidth, zorder=3)
+        lines = LineCollection(segments, colors=colors, linewidths=linewidth, zorder=3)
         self.axes.add_collection(lines)
 
         # Plot vertices
-        xs, ys = positions[:, 1], positions[:, 0]  # flip to (x, y)
+        xs = [positions[n][1] for n in positions]
+        ys = [positions[n][0] for n in positions]
         vertex_plot = self.axes.scatter(xs, ys, c=vertex_color, s=vertex_size, zorder=4)
 
         # Store references
@@ -703,5 +707,4 @@ class MPLWidget(QtWidgets.QWidget):
                     pass
             del self.artists['junction_trees']
             self.canvas.draw()
-
 

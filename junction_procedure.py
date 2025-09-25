@@ -113,7 +113,7 @@ def branch_agreement_energy(
     ray_a: Ray,
     leaf_b: NodeId,
     ray_b: Ray,
-    min_alignment: float,
+    alignment_threshold: float,
 ) -> float:
     """Return an alignment weight for two branch rays (0.0 means incompatible)."""
 
@@ -122,7 +122,7 @@ def branch_agreement_energy(
     a_alignment = np.dot(ray_a.direction, ab_dir)
     b_alignment = np.dot(ray_b.direction, -ab_dir)
     alignment = a_alignment+b_alignment
-    if alignment < float(min_alignment):
+    if alignment < float(alignment_threshold):
         return 0.0
     return alignment
 
@@ -130,7 +130,7 @@ def branch_agreement_energy(
 def colinear_leaf_pairs(
     tree: JunctionTree,
     rays: Dict[NodeId, Ray],
-    min_alignment: float,
+    alignment_threshold: float,
 ) -> List[Edge]:
     """Return ordered colinear pairs for the given leaf rays via max-weight matching."""
 
@@ -145,7 +145,7 @@ def colinear_leaf_pairs(
         ray_u = rays[u]
         for v in leaves[i + 1:]:
             ray_v = rays[v]
-            weight = branch_agreement_energy(u, ray_u, v, ray_v, min_alignment)
+            weight = branch_agreement_energy(u, ray_u, v, ray_v, alignment_threshold)
             if weight <= 0.0:
                 continue
             H.add_edge(u, v, weight=float(weight))
@@ -454,7 +454,7 @@ def _rewire_tree(
     graph: nx.Graph,
     tree: JunctionTree,
     positions: dict[NodeId, np.ndarray],
-    colinear_dot: float,
+    alignment_threshold: float,
 ) -> Optional[JunctionRewire]:
     if not tree.edges:
         return None
@@ -475,7 +475,7 @@ def _rewire_tree(
         return arr
 
     rays = leaf_tangent_rays(graph, tree, positions)
-    colinear_pairs = colinear_leaf_pairs(tree, rays, colinear_dot)
+    colinear_pairs = colinear_leaf_pairs(tree, rays, alignment_threshold)
 
     if not colinear_pairs:
         return _rewire_no_colinear_case(graph, tree, positions, get_position, rays)
@@ -506,18 +506,17 @@ def _rewire_tree(
 def rewire_junction_trees(
     graph: nx.Graph,
     trees: Tuple[JunctionTree, ...],
-    colinear_dot: float = 1.5,
+    alignment_threshold: float = 1.5,
 ) -> Tuple[nx.Graph, Tuple[JunctionRewire, ...]]:
     if not trees:
         return graph.copy(), tuple()
 
-    colinear_dot = max(min(float(colinear_dot), 1.0), -1.0)
     rewired_graph = graph.copy()
     positions: dict[NodeId, np.ndarray] = {}
     reports: List[JunctionRewire] = []
 
     for tree in trees:
-        report = _rewire_tree(rewired_graph, tree, positions, colinear_dot)
+        report = _rewire_tree(rewired_graph, tree, positions, float(alignment_threshold))
         if report is not None:
             reports.append(report)
 

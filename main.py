@@ -1,14 +1,14 @@
 import os
 import sys
 import logging
+from pathlib import Path
 
 import cv2
 import numpy as np
-from PySide6.QtWidgets import QApplication, QMainWindow, QFileDialog
+from PySide6.QtWidgets import QApplication, QMainWindow, QFileDialog, QMessageBox
 
 from ui_viewer import Ui_MainWindow
 from image_processing import normalize_to_measure, process_image
-from vector_utils import export_contours_to_svg
 from junction_types import StrokeGraph
 
 logging.basicConfig(
@@ -45,6 +45,7 @@ class MainWindow(QMainWindow):
         self.base_image = None
         self.image_measure = None
         self.stroke_graph_model: StrokeGraph | None = None
+        self.current_image_path: Path | None = None
 
         self.distance_function = None
         self.boundary_contours = None
@@ -257,6 +258,7 @@ class MainWindow(QMainWindow):
             return
         # read image and display it
         self.base_image = 255 - process_image(file_path, padding=0)
+        self.current_image_path = Path(file_path)
         self.compute_image_measure()
         self.ui.original_image_radiobutton.setChecked(True)
 
@@ -388,8 +390,43 @@ class MainWindow(QMainWindow):
         self._rebuild_stroke_graph()
 
     def export_contour_svg(self):
-        if self.boundary_contours:
-            export_contours_to_svg(self.boundary_contours, "output.svg")
+        if self.stroke_graph_model is None or self.stroke_graph is None or self.stroke_graph.number_of_edges() == 0:
+            QMessageBox.warning(self, "Export Stroke Graph", "Stroke graph is not available.")
+            return
+
+        default_dir = Path.cwd()
+        default_name = (
+            f"{self.current_image_path.stem}_stroke_graph.svg"
+            if self.current_image_path
+            else "stroke_graph.svg"
+        )
+
+        save_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Stroke Graph",
+            str(default_dir / default_name),
+            "SVG Files (*.svg)"
+        )
+        if not save_path:
+            return
+
+        try:
+            self.stroke_graph_model.assign_stroke_ids()
+            self.stroke_graph_model.export_stroke_graph_svg(save_path)
+        except Exception as exc:
+            logger.exception("Failed to export stroke graph to SVG")
+            QMessageBox.critical(
+                self,
+                "Export Stroke Graph",
+                f"Failed to export stroke graph:\n{exc}",
+            )
+            return
+
+        QMessageBox.information(
+            self,
+            "Export Stroke Graph",
+            f"Stroke graph exported to:\n{save_path}",
+        )
 
     ### Toggle Functions
     def toggle_original_image(self):

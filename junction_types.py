@@ -1,8 +1,11 @@
 from __future__ import annotations
-from typing import Callable, Iterable, Tuple
+import random
+from pathlib import Path
+from typing import Callable, Iterable, Tuple, Dict, List, Any
 
 import numpy as np
 import networkx as nx
+import xml.etree.ElementTree as ET
 
 from distance_to_measure import distance_to_measure_roi_sparse_cpu_numba
 from curve_extraction import (
@@ -55,6 +58,9 @@ class StrokeGraph:
         self.junctions: Tuple[Junction, ...] = tuple()
         self.junction_trees: Tuple[JunctionTree, ...] = tuple()
         self.junction_rewires: Tuple[JunctionRewire, ...] = tuple()
+        self.stroke_sequences: Tuple[List[NodeId], ...] = tuple()
+        self.cycle_sequences: Tuple[List[NodeId], ...] = tuple()
+        self.stroke_metadata: Dict[int, Dict[str, Any]] = {}
 
         self._run_pipeline_from("distance")
 
@@ -223,6 +229,9 @@ class StrokeGraph:
             self.junctions = tuple()
             self.junction_trees = tuple()
             self.junction_rewires = tuple()
+            self.stroke_sequences = tuple()
+            self.cycle_sequences = tuple()
+            self.stroke_metadata = {}
             return
 
         graph = self.pruned_graph.copy()
@@ -238,6 +247,187 @@ class StrokeGraph:
         self.stroke_graph, rewires = rewire_junction_trees(
             graph,
             self.junction_trees,
-            colinear_dot=0.92,
+            alignment_threshold=1.5,
         )
         self.junction_rewires = rewires
+        self.assign_stroke_ids()
+
+    def export_stroke_graph_svg(self, output_path: str | Path) -> Tuple[List[List[NodeId]], List[List[NodeId]]]:
+        """Export the stroke graph to an SVG file and return stroke/cycle node sequences."""
+
+        if self.stroke_graph is None or self.stroke_graph.number_of_edges() == 0:
+            raise ValueError("Stroke graph is empty; nothing to export.")
+
+        strokes, cycles = _extract_strokes_and_cycles(self.stroke_graph)
+        self.stroke_sequences = tuple(strokes)
+        self.cycle_sequences = tuple(cycles)
+        if not strokes and not cycles:
+            raise ValueError("No stroke geometry detected in the stroke graph.")
+
+        positions: Dict[NodeId, np.ndarray] = {}
+        for node in self.stroke_graph.nodes:
+            pos = self.stroke_graph.nodes[node].get("position")
+            if pos is None:
+                raise ValueError(f"Node {node} is missing position data.")
+            positions[node] = np.asarray(pos, dtype=float)
+
+        width = float(self.width)
+        height = float(self.height)
+
+        svg = ET.Element(
+            "svg",
+            {
+                "xmlns": "http://www.w3.org/2000/svg",
+                "version": "1.1",
+                "width": f"{width}",
+                "height": f"{height}",
+                "viewBox": f"0 0 {width} {height}",
+            },
+        )
+
+        strokes_group = ET.SubElement(svg, "g", {"id": "strokes"})
+        for idx, nodes in enumerate(strokes):
+            points = _points_string(nodes, positions)
+            ET.SubElement(
+                strokes_group,
+                "polyline",
+                {
+                    "points": points,
+                    "fill": "none",
+                    "stroke": "black",
+                    "stroke-width": "1",
+                    "data-stroke-index": str(idx),
+                },
+            )
+
+        cycles_group = ET.SubElement(svg, "g", {"id": "cycles"})
+        for idx, nodes in enumerate(cycles):
+            node_sequence = nodes if nodes[0] == nodes[-1] else nodes + [nodes[0]]
+            points = _points_string(node_sequence, positions)
+            ET.SubElement(
+                cycles_group,
+                "polyline",
+                {
+                    "points": points,
+                    "fill": "none",
+                    "stroke": "black",
+                    "stroke-width": "1",
+                    "data-cycle-index": str(idx),
+                },
+            )
+
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        tree = ET.ElementTree(svg)
+        tree.write(output_path, encoding="utf-8", xml_declaration=True)
+
+        return strokes, cycles
+
+    def assign_stroke_ids(self, seed: int | None = None) -> Dict[int, Dict[str, Any]]:
+        """Assign a stroke id and random color to every edge in the stroke graph."""
+
+        if self.stroke_graph is None or self.stroke_graph.number_of_edges() == 0:
+            self.stroke_sequences = tuple()
+            self.cycle_sequences = tuple()
+            self.stroke_metadata = {}
+            return {}
+
+        strokes, cycles = _extract_strokes_and_cycles(self.stroke_graph)
+        self.stroke_sequences = tuple(strokes)
+        self.cycle_sequences = tuple(cycles)
+
+        rng = random.Random(seed)
+        metadata: Dict[int, Dict[str, Any]] = {}
+
+        for u, v in self.stroke_graph.edges:
+            self.stroke_graph.edges[u, v].pop("stroke_id", None)
+            self.stroke_graph.edges[u, v].pop("stroke_color", None)
+
+        sequences: List[List[NodeId]] = strokes + [cycle if cycle[0] == cycle[-1] else cycle + [cycle[0]] for cycle in cycles]
+
+        for stroke_id, nodes in enumerate(sequences):
+            color = tuple(rng.random() for _ in range(3))
+            color_hex = "#" + "".join(f"{int(c*255):02X}" for c in color)
+            edges = list(zip(nodes[:-1], nodes[1:]))
+            for a, b in edges:
+                if not self.stroke_graph.has_edge(a, b) and self.stroke_graph.has_edge(b, a):
+                    a, b = b, a
+                if self.stroke_graph.has_edge(a, b):
+                    self.stroke_graph.edges[a, b]["stroke_id"] = stroke_id
+                    self.stroke_graph.edges[a, b]["stroke_color"] = color_hex
+            metadata[stroke_id] = {
+                "nodes": nodes,
+                "color": color_hex,
+            }
+
+        self.stroke_metadata = metadata
+        return metadata
+
+
+def _edge_key(u: NodeId, v: NodeId) -> Edge:
+    return (u, v) if u <= v else (v, u)
+
+
+def _points_string(
+    nodes: List[NodeId],
+    positions: Dict[NodeId, np.ndarray],
+) -> str:
+    return " ".join(
+        f"{positions[n][1]:.6f},{positions[n][0]:.6f}"
+        for n in nodes
+    )
+
+
+def _extract_strokes_and_cycles(graph: nx.Graph) -> Tuple[List[List[NodeId]], List[List[NodeId]]]:
+    visited_edges: set[Edge] = set()
+    strokes: List[List[NodeId]] = []
+    cycles: List[List[NodeId]] = []
+
+    for node in graph.nodes:
+        if graph.degree[node] in (0, 2):
+            continue
+        for neighbor in graph.neighbors(node):
+            edge = _edge_key(node, neighbor)
+            if edge in visited_edges:
+                continue
+            path = [node, neighbor]
+            visited_edges.add(edge)
+            prev = node
+            curr = neighbor
+            while graph.degree[curr] == 2:
+                next_nodes = [n for n in graph.neighbors(curr) if n != prev]
+                if not next_nodes:
+                    break
+                nxt = next_nodes[0]
+                edge = _edge_key(curr, nxt)
+                if edge in visited_edges:
+                    break
+                visited_edges.add(edge)
+                path.append(nxt)
+                prev, curr = curr, nxt
+            strokes.append(path)
+
+    for u, v in graph.edges:
+        edge = _edge_key(u, v)
+        if edge in visited_edges:
+            continue
+        cycle = [u, v]
+        visited_edges.add(edge)
+        prev = u
+        curr = v
+        while True:
+            neighbors = [n for n in graph.neighbors(curr) if n != prev]
+            if not neighbors:
+                break
+            nxt = neighbors[0]
+            edge = _edge_key(curr, nxt)
+            if edge in visited_edges:
+                cycle.append(nxt)
+                break
+            visited_edges.add(edge)
+            cycle.append(nxt)
+            prev, curr = curr, nxt
+        if len(cycle) >= 3 and cycle[0] == cycle[-1]:
+            cycles.append(cycle)
+
+    return strokes, cycles
