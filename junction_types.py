@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Any, Callable, Iterable, Tuple
+from typing import Callable, Iterable, Tuple
 
 import numpy as np
 import networkx as nx
@@ -12,7 +12,14 @@ from curve_extraction import (
     resample_contours,
     unique_contour_points,
 )
-from junction_analysis import process_junctions
+from junction_procedure import (
+    Junction,
+    JunctionRewire,
+    JunctionTree,
+    build_junction_trees,
+    identify_junctions,
+    rewire_junction_trees,
+)
 from image_processing import find_contours
 
 NodeId = int
@@ -45,9 +52,9 @@ class StrokeGraph:
         self.pruned_graph: nx.Graph | None = None
         self.stroke_graph: nx.Graph | None = None
 
-        self.junction_report: dict[str, Any] | None = None
-        self.junction_subtrees: tuple = tuple()
-        self.junction_analyses: tuple = tuple()
+        self.junctions: Tuple[Junction, ...] = tuple()
+        self.junction_trees: Tuple[JunctionTree, ...] = tuple()
+        self.junction_rewires: Tuple[JunctionRewire, ...] = tuple()
 
         self._run_pipeline_from("distance")
 
@@ -213,19 +220,24 @@ class StrokeGraph:
     def _compute_stroke_graph(self) -> None:
         if self.pruned_graph is None or self.pruned_graph.number_of_nodes() == 0:
             self.stroke_graph = nx.Graph()
-            self.junction_report = None
-            self.junction_subtrees = tuple()
-            self.junction_analyses = tuple()
+            self.junctions = tuple()
+            self.junction_trees = tuple()
+            self.junction_rewires = tuple()
             return
 
         graph = self.pruned_graph.copy()
-        stroke_graph, report = process_junctions(
+        self.junctions = identify_junctions(
             graph,
             self.object_angle_junction_threshold,
+        )
+        self.junction_trees = build_junction_trees(
+            graph,
+            self.junctions,
             self.stroke_width,
         )
-
-        self.stroke_graph = stroke_graph
-        self.junction_report = report
-        self.junction_subtrees = tuple(report.get("subtrees", tuple()))
-        self.junction_analyses = tuple(report.get("analyses", tuple()))
+        self.stroke_graph, rewires = rewire_junction_trees(
+            graph,
+            self.junction_trees,
+            colinear_dot=0.92,
+        )
+        self.junction_rewires = rewires

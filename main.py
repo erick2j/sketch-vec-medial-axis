@@ -51,8 +51,9 @@ class MainWindow(QMainWindow):
         self.medial_axis = None
         self.pruned_medial_axis = None
         self.stroke_graph = None
-        self.subtrees = tuple()
-        self.analyses = tuple()
+        self.junctions = tuple()
+        self.junction_trees = tuple()
+        self.junction_rewires = tuple()
 
         self.iso_scale = float(self.get_iso_scale())
         self.ui.isovalue_display.display(self.iso_scale)
@@ -170,8 +171,9 @@ class MainWindow(QMainWindow):
             self.medial_axis = None
             self.pruned_medial_axis = None
             self.stroke_graph = None
-            self.subtrees = tuple()
-            self.analyses = tuple()
+            self.junctions = tuple()
+            self.junction_trees = tuple()
+            self.junction_rewires = tuple()
             return
 
         self.distance_function = model.distance_function
@@ -179,8 +181,9 @@ class MainWindow(QMainWindow):
         self.medial_axis = model.medial_axis
         self.pruned_medial_axis = model.pruned_graph
         self.stroke_graph = model.stroke_graph
-        self.subtrees = model.junction_subtrees
-        self.analyses = model.junction_analyses
+        self.junctions = model.junctions
+        self.junction_trees = model.junction_trees
+        self.junction_rewires = model.junction_rewires
 
     def _sync_slider_positions(self):
         self.ui.stroke_width_display.display(self.stroke_width)
@@ -430,22 +433,21 @@ class MainWindow(QMainWindow):
         if (
             self.ui.junctions_checkbox.isChecked()
             and self.stroke_graph is not None
-            and self.subtrees
-            and self.analyses
+            and (self.junctions or self.junction_trees)
         ):
-            self.ui.mpl_widget.plot_junction_subtrees(self.stroke_graph, self.subtrees)
-            self.ui.mpl_widget.plot_subtree_leaf_tangents(
+            '''
+            self.ui.mpl_widget.plot_medial_axis_junctions(
                 self.stroke_graph,
-                self.analyses,
-                length=14.0,
-                color='black',
-                linewidth=1.2,
+                self.junctions,
             )
-            self.ui.mpl_widget.plot_leaf_order_labels(self.stroke_graph, self.analyses)
+            '''
+            self.ui.mpl_widget.plot_junction_trees(
+                self.stroke_graph,
+                self.junction_trees,
+            )
         else:
-            self.ui.mpl_widget.hide_junction_subtrees()
-            self.ui.mpl_widget.hide_subtree_leaf_tangents()
-            self.ui.mpl_widget.hide_leaf_order_labels()
+            #self.ui.mpl_widget.hide_medial_axis_junctions()
+            self.ui.mpl_widget.hide_junction_trees()
 
 
     ### Getters for sliders

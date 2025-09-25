@@ -277,44 +277,115 @@ class MPLWidget(QtWidgets.QWidget):
         self.canvas.draw()
 
 
-    def plot_medial_axis_junctions(self, graph, junctions):
-        """
-        Plot junctions on the Matplotlib canvas.
-        Assumes `junctions` is a dict of Junction dataclasses.
-        """
-        # Clear previous junction plots
-        self.hide_medial_axis_junctions()
-        self.artists['junctions'] = []
+    def plot_medial_axis_junctions(
+        self,
+        graph,
+        junctions,
+        cmap_name='tab20',
+        linewidth=2.0,
+        marker_size=18,
+    ):
+        """Plot junction branches in distinct colors for quick inspection."""
 
-        color_map = {
-            'T-junction': 'red',
-            'Y-junction': 'blue',
-            'X-junction': 'green',
-            'unknown':    'cyan',
+        self.hide_medial_axis_junctions()
+
+        if graph is None or graph.number_of_nodes() == 0 or not junctions:
+            return
+
+        cmap = plt.colormaps.get_cmap(cmap_name)
+        colors = [cmap(i % cmap.N) for i in range(len(junctions))]
+        artists = []
+
+        for idx, junction in enumerate(junctions):
+            color = colors[idx]
+            center_pos = np.asarray(graph.nodes[junction.root]['position'], dtype=float)[::-1]
+
+            for branch in junction.branches:
+                if len(branch.nodes) < 2:
+                    continue
+                pts = [
+                    np.asarray(graph.nodes[node]['position'], dtype=float)[::-1]
+                    for node in branch.nodes
+                ]
+                segments = [
+                    np.vstack((pts[i], pts[i + 1]))
+                    for i in range(len(pts) - 1)
+                ]
+                if not segments:
+                    continue
+                lc = LineCollection(segments, colors=[color], linewidths=linewidth, zorder=3)
+                self.axes.add_collection(lc)
+                artists.append(lc)
+
+            sc = self.axes.scatter(
+                [center_pos[0]],
+                [center_pos[1]],
+                s=marker_size,
+                c=[color],
+                edgecolors='k',
+                linewidths=0.8,
+                zorder=4,
+            )
+            artists.append(sc)
+
+        self.artists['junctions'] = artists
+        self.canvas.draw()
+
+
+    def plot_junction_trees(
+        self,
+        graph,
+        trees,
+        linewidth=2.2,
+        marker_size=22,
+        cmap_name='tab20',
+    ):
+        """Draw merged junction trees with a random color per tree (edges & leaves)."""
+
+        self.hide_junction_trees()
+
+        if graph is None or graph.number_of_nodes() == 0 or not trees:
+            return
+
+        cmap = plt.colormaps.get_cmap(cmap_name)
+        artists = []
+
+        positions = {
+            n: np.asarray(graph.nodes[n]['position'], dtype=float)[::-1]
+            for n in graph.nodes
         }
 
-        for junc in junctions.values():
-            center = junc.center_node
-            jtype  = junc.type
-            color  = color_map.get(jtype, 'cyan')
-
-            # Plot each branch
-            for br in junc.branches:
-                path = br.path_nodes
-                if len(path) < 2:
+        for tree in trees:
+            color = cmap(random.random())
+            segments = []
+            for u, v in tree.edges:
+                if u not in positions or v not in positions:
                     continue
-                pts = [np.array(graph.nodes[n]['position'])[::-1] for n in path]
-                segments = [np.vstack([pts[i], pts[i+1]]) for i in range(len(pts)-1)]
-                lc = LineCollection(segments, colors=color, linewidths=2, zorder=1)
+                segments.append(np.vstack((positions[u], positions[v])))
+
+            if segments:
+                lc = LineCollection(segments, colors=[color], linewidths=linewidth, zorder=2)
                 self.axes.add_collection(lc)
-                self.artists['junctions'].append(lc)
+                artists.append(lc)
 
-            # Plot center point
-            cpos = np.array(graph.nodes[center]['position'])[::-1]
-            sc = self.axes.scatter([cpos[0]], [cpos[1]], s=10, c=color, edgecolors='k', zorder=1)
-            self.artists['junctions'].append(sc)
+            if tree.leaves:
+                xs = [positions[n][0] for n in tree.leaves if n in positions]
+                ys = [positions[n][1] for n in tree.leaves if n in positions]
+                if xs and ys:
+                    sc = self.axes.scatter(
+                        xs,
+                        ys,
+                        s=marker_size,
+                        c=[color],
+                        edgecolors='k',
+                        linewidths=0.6,
+                        zorder=3,
+                    )
+                    artists.append(sc)
 
-        self.canvas.draw()
+        if artists:
+            self.artists['junction_trees'] = artists
+            self.canvas.draw()
 
 
     def plot_junction_subtrees(
@@ -623,8 +694,14 @@ class MPLWidget(QtWidgets.QWidget):
             del self.artists['junctions']
             self.canvas.draw()
 
-
-
-
+    def hide_junction_trees(self):
+        if 'junction_trees' in self.artists:
+            for artist in self.artists['junction_trees']:
+                try:
+                    artist.remove()
+                except (AttributeError, ValueError):
+                    pass
+            del self.artists['junction_trees']
+            self.canvas.draw()
 
 
