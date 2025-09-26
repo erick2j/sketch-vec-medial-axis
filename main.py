@@ -253,7 +253,7 @@ class MainWindow(QMainWindow):
         for future use.
         '''
         # open file dialog to choose an image
-        file_path, _ = QFileDialog.getOpenFileName(self, "Open Image", "", "Images (*.png *.jpg *.bmp *.tiff)")
+        file_path, _ = QFileDialog.getOpenFileName(self, "Open Image", "", "Images (*.png *.jpg *.jpeg *.bmp *.tiff)")
         if not file_path:
             return
         # read image and display it
